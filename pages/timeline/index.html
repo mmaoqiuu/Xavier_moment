@@ -1,0 +1,1761 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>✨ Moment</title>
+    <style>
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f7f7f8;
+            --bg-card: #ffffff;
+            --text-primary: #1a1a2e;
+            --text-secondary: #6b7280;
+            --text-muted: #9ca3af;
+            --border-color: #e5e7eb;
+            --accent: #7c3aed;
+            --accent-light: #a78bfa;
+            --accent-bg: #f3e8ff;
+            --danger: #ef4444;
+            --shadow: 0 1px 3px rgba(0,0,0,0.08);
+            --shadow-hover: 0 4px 12px rgba(0,0,0,0.1);
+            --radius: 12px;
+        }
+
+        [data-theme="dark"] {
+            --bg-primary: #0f0f23;
+            --bg-secondary: #1a1a2e;
+            --bg-card: #16213e;
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border-color: #2d3748;
+            --accent: #a78bfa;
+            --accent-light: #c4b5fd;
+            --accent-bg: #1e1b4b;
+            --shadow: 0 1px 3px rgba(0,0,0,0.3);
+            --shadow-hover: 0 4px 12px rgba(0,0,0,0.4);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            transition: background 0.3s, color 0.3s;
+        }
+
+        /* Cover Header */
+        .cover-header {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            margin: 0 auto;
+            height: 200px;
+            background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 50%, #a78bfa 100%);
+            background-size: cover;
+            background-position: center;
+            border-radius: 0 0 var(--radius) var(--radius);
+            overflow: hidden;
+        }
+
+        .cover-header img.cover-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .cover-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 80px;
+            background: linear-gradient(transparent, rgba(0,0,0,0.4));
+        }
+
+        .cover-actions {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            display: flex;
+            gap: 8px;
+        }
+
+        .cover-actions button {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(255,255,255,0.2);
+            backdrop-filter: blur(8px);
+            color: #fff;
+            font-size: 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+
+        .cover-actions button:hover {
+            background: rgba(255,255,255,0.35);
+        }
+
+        .notification-badge {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            width: 8px;
+            height: 8px;
+            background: #ef4444;
+            border-radius: 50%;
+            display: none;
+        }
+
+        .notification-badge.active {
+            display: block;
+        }
+
+        /* Signature */
+        .cover-signature {
+            position: absolute;
+            bottom: 20px;
+            left: 24px;
+            right: 80px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .cover-signature .sig-text {
+            color: #ffffff;
+            font-size: 20px;
+            font-weight: 600;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.4);
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .cover-signature .sig-edit-btn {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(255,255,255,0.25);
+            color: #fff;
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .cover-signature:hover .sig-edit-btn {
+            opacity: 1;
+        }
+
+        .sig-edit-container {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            width: 100%;
+        }
+
+        .sig-edit-container input {
+            flex: 1;
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.4);
+            border-radius: 6px;
+            padding: 4px 10px;
+            color: #fff;
+            font-size: 16px;
+            outline: none;
+            backdrop-filter: blur(8px);
+        }
+
+        .sig-edit-container input::placeholder {
+            color: rgba(255,255,255,0.6);
+        }
+
+        .sig-edit-container button {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(255,255,255,0.3);
+            color: #fff;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Main Container */
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 16px;
+        }
+
+        /* Compose Area */
+        .compose-card {
+            background: var(--bg-card);
+            border-radius: var(--radius);
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: var(--shadow);
+            animation: fadeInUp 0.3s ease;
+        }
+
+        .compose-card textarea {
+            width: 100%;
+            min-height: 80px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 14px;
+            resize: vertical;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .compose-card textarea:focus {
+            border-color: var(--accent);
+        }
+
+        .compose-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 12px;
+        }
+
+        .compose-toolbar-left {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .mood-selector {
+            position: relative;
+        }
+
+        .mood-btn {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 6px 12px;
+            font-size: 14px;
+            cursor: pointer;
+            color: var(--text-secondary);
+            transition: all 0.2s;
+        }
+
+        .mood-btn:hover {
+            border-color: var(--accent);
+        }
+
+        .mood-dropdown {
+            position: absolute;
+            bottom: 100%;
+            left: 0;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 8px;
+            display: none;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 4px;
+            box-shadow: var(--shadow-hover);
+            z-index: 100;
+        }
+
+        .mood-dropdown.active {
+            display: grid;
+        }
+
+        .mood-dropdown span {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: background 0.15s;
+        }
+
+        .mood-dropdown span:hover {
+            background: var(--accent-bg);
+        }
+
+        .upload-btn {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 6px 12px;
+            font-size: 14px;
+            cursor: pointer;
+            color: var(--text-secondary);
+            transition: all 0.2s;
+        }
+
+        .upload-btn:hover {
+            border-color: var(--accent);
+        }
+
+        .post-btn {
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: 8px 20px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .post-btn:hover {
+            background: var(--accent-light);
+            transform: translateY(-1px);
+        }
+
+        .post-btn:disabled {
+            opacity: 0.5;
+            transform: none;
+            cursor: not-allowed;
+        }
+
+        .image-preview-area {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .image-preview-area .preview-thumb {
+            position: relative;
+            width: 60px;
+            height: 60px;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .image-preview-area .preview-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .image-preview-area .preview-thumb .remove-img {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            width: 18px;
+            height: 18px;
+            background: rgba(0,0,0,0.6);
+            color: #fff;
+            border-radius: 50%;
+            border: none;
+            font-size: 10px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Post Card */
+        .post-card {
+            background: var(--bg-card);
+            border-radius: var(--radius);
+            padding: 16px;
+            margin-bottom: 12px;
+            box-shadow: var(--shadow);
+            animation: fadeInUp 0.3s ease;
+            transition: box-shadow 0.2s;
+        }
+
+        .post-card:hover {
+            box-shadow: var(--shadow-hover);
+        }
+
+        .post-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+
+
+        .post-meta {
+            flex: 1;
+        }
+
+        .post-author {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .post-time {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .post-mood {
+            font-size: 20px;
+        }
+
+        .post-content {
+            font-size: 15px;
+            line-height: 1.6;
+            margin-bottom: 10px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .post-images {
+            display: grid;
+            gap: 4px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .post-images.grid-1 {
+            grid-template-columns: 1fr;
+        }
+
+        .post-images.grid-2 {
+            grid-template-columns: 1fr 1fr;
+        }
+
+        .post-images.grid-3 {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+
+        .post-images.grid-4 {
+            grid-template-columns: 1fr 1fr;
+        }
+
+        .post-images img {
+            width: 100%;
+            aspect-ratio: 1;
+            object-fit: cover;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .post-images img:hover {
+            opacity: 0.9;
+        }
+
+        /* Reactions */
+        .reactions-bar {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
+
+        .reaction-chip {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 4px 10px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .reaction-chip.active {
+            background: var(--accent-bg);
+            border-color: var(--accent);
+        }
+
+        .reaction-chip:hover {
+            border-color: var(--accent);
+        }
+
+        .add-reaction-btn {
+            background: var(--bg-secondary);
+            border: 1px dashed var(--border-color);
+            border-radius: 20px;
+            padding: 4px 10px;
+            font-size: 13px;
+            cursor: pointer;
+            color: var(--text-muted);
+            transition: all 0.2s;
+        }
+
+        .add-reaction-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .reaction-picker {
+            display: none;
+            position: absolute;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 8px;
+            box-shadow: var(--shadow-hover);
+            z-index: 50;
+        }
+
+        .reaction-picker.active {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 4px;
+        }
+
+        .reaction-picker span {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: background 0.15s;
+        }
+
+        .reaction-picker span:hover {
+            background: var(--accent-bg);
+        }
+
+        /* Post Actions */
+        .post-actions {
+            display: flex;
+            gap: 16px;
+            padding-top: 8px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .post-actions button {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 13px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: color 0.2s;
+        }
+
+        .post-actions button:hover {
+            color: var(--accent);
+        }
+
+        .post-delete-btn {
+            margin-left: auto;
+        }
+
+        .post-delete-btn:hover {
+            color: var(--danger) !important;
+        }
+
+        /* Comments */
+        .comments-section {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 8px;
+        }
+
+        .comment-item {
+            display: block;
+            margin-bottom: 4px;
+            animation: fadeInUp 0.2s ease;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .comment-author {
+            font-weight: 600;
+            color: var(--accent);
+            cursor: pointer;
+        }
+
+        .comment-text {
+            color: var(--text-primary);
+            word-break: break-word;
+        }
+
+        .comment-reply-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 11px;
+            cursor: pointer;
+            margin-left: 8px;
+        }
+
+        .comment-reply-btn:hover {
+            color: var(--accent);
+        }
+
+        .comment-input-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .comment-input-row input {
+            flex: 1;
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 6px 14px;
+            font-size: 13px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .comment-input-row input:focus {
+            border-color: var(--accent);
+        }
+
+        .comment-input-row button {
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 20px;
+            padding: 6px 14px;
+            font-size: 13px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 0.2s;
+        }
+
+        .comment-input-row button:hover {
+            background: var(--accent-light);
+        }
+
+        /* Notification Panel */
+        .notification-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.3);
+            z-index: 999;
+        }
+
+        .notification-overlay.active {
+            display: block;
+        }
+
+        .notification-panel {
+            position: fixed;
+            top: 0;
+            right: -110vw;
+            width: 360px;
+            max-width: 100vw;
+            height: 100vh;
+            background: var(--bg-card);
+            box-shadow: -4px 0 20px rgba(0,0,0,0.15);
+            z-index: 1000;
+            transition: right 0.3s ease;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .notification-panel.active {
+            right: 0;
+        }
+
+        .notification-panel-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .notification-panel-header h3 {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .notification-panel-header button {
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            color: var(--text-muted);
+        }
+
+        .notification-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+        }
+
+        .notification-item {
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            background: var(--bg-secondary);
+            font-size: 13px;
+            line-height: 1.5;
+            animation: fadeInUp 0.2s ease;
+        }
+
+        .notification-item .notif-time {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .notification-empty {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        /* Settings Popup */
+        .settings-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.4);
+            z-index: 999;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .settings-overlay.active {
+            display: flex;
+        }
+
+        .settings-popup {
+            background: var(--bg-card);
+            border-radius: var(--radius);
+            padding: 24px;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: var(--shadow-hover);
+        }
+
+        .settings-popup h3 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+
+        .settings-group {
+            margin-bottom: 16px;
+        }
+
+        .settings-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        .settings-group input {
+            width: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 14px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .settings-group input:focus {
+            border-color: var(--accent);
+        }
+
+        .settings-group small {
+            display: block;
+            margin-top: 4px;
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .settings-btn-row {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+
+        .settings-btn-row button {
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .settings-btn-row .cancel-btn {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+        }
+
+        .settings-btn-row .save-btn {
+            background: var(--accent);
+            border: none;
+            color: #fff;
+        }
+
+        .settings-btn-row .save-btn:hover {
+            background: var(--accent-light);
+        }
+
+        /* Skeleton Loading */
+        .skeleton-card {
+            background: var(--bg-card);
+            border-radius: var(--radius);
+            padding: 16px;
+            margin-bottom: 12px;
+            box-shadow: var(--shadow);
+        }
+
+        .skeleton-line {
+            height: 14px;
+            background: linear-gradient(90deg, var(--border-color) 25%, var(--bg-secondary) 50%, var(--border-color) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 4px;
+            margin-bottom: 8px;
+        }
+
+        .skeleton-line.short {
+            width: 40%;
+        }
+
+        .skeleton-line.medium {
+            width: 70%;
+        }
+
+
+
+        /* Image Lightbox */
+        .lightbox-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.9);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+
+        .lightbox-overlay.active {
+            display: flex;
+        }
+
+        .lightbox-overlay img {
+            max-width: 90%;
+            max-height: 90vh;
+            object-fit: contain;
+            border-radius: 4px;
+        }
+
+        /* Load More */
+        .load-more-btn {
+            display: block;
+            width: 100%;
+            padding: 12px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            color: var(--text-secondary);
+            font-size: 14px;
+            cursor: pointer;
+            text-align: center;
+            transition: all 0.2s;
+            margin-bottom: 16px;
+        }
+
+        .load-more-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+        }
+
+        .empty-state .empty-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        /* Animations */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .container {
+                padding: 8px;
+                max-width: 100%;
+            }
+
+            .cover-header {
+                height: 140px;
+                border-radius: 0;
+            }
+
+            .cover-actions {
+                top: 8px;
+                right: 8px;
+                gap: 6px;
+            }
+
+            .cover-actions button {
+                width: 32px;
+                height: 32px;
+                font-size: 16px;
+            }
+
+            .compose-card {
+                padding: 12px;
+            }
+
+            .compose-card textarea {
+                font-size: 15px;
+                min-height: 60px;
+            }
+
+            .compose-toolbar {
+                flex-direction: row;
+                align-items: center;
+            }
+
+            .post-btn {
+                width: auto;
+                min-width: 64px;
+                margin-left: auto;
+            }
+
+            .post-card {
+                padding: 12px;
+            }
+
+            .post-content {
+                font-size: 14px;
+            }
+
+            .post-actions {
+                gap: 4px;
+            }
+
+            .post-actions button {
+                font-size: 12px;
+                padding: 4px 8px;
+            }
+
+            .comment-input-row {
+                flex-direction: row;
+            }
+
+            .comment-input-row input {
+                font-size: 14px;
+            }
+
+            .notification-panel {
+                width: 100vw;
+            }
+
+            .settings-popup {
+                width: 95%;
+                padding: 20px 16px;
+            }
+
+            .mood-dropdown {
+                grid-template-columns: repeat(5, 1fr);
+            }
+
+            .reaction-picker.active {
+                grid-template-columns: repeat(5, 1fr);
+            }
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Cover Header -->
+    <div class="cover-header" id="coverHeader">
+        <div class="cover-overlay"></div>
+        <div class="cover-actions">
+            <button id="darkModeBtn" title="切换深色模式">🌙</button>
+            <button id="notifBtn" title="通知" style="position:relative">
+                🔔
+                <span class="notification-badge" id="notifBadge"></span>
+            </button>
+            <button id="settingsBtn" title="设置">⚙️</button>
+        </div>
+        <div class="cover-signature" id="sigArea">
+            <span class="sig-text" id="sigText">Moment</span>
+            <button class="sig-edit-btn" id="sigEditBtn" title="编辑签名">✏️</button>
+            <div class="sig-edit-container" id="sigEditContainer">
+                <input type="text" id="sigInput" placeholder="写下你的签名..." maxlength="30">
+                <button id="sigSaveBtn">✓</button>
+                <button id="sigCancelBtn">✗</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="container">
+        <!-- Compose -->
+        <div class="compose-card">
+            <textarea id="composeText" placeholder="记录此刻的想法..."></textarea>
+            <div class="image-preview-area" id="imagePreviewArea"></div>
+            <div class="compose-toolbar">
+                <div class="compose-toolbar-left">
+                    <div class="mood-selector">
+                        <button class="mood-btn" id="moodBtn">😊 心情</button>
+                        <div class="mood-dropdown" id="moodDropdown">
+                            <span data-mood="😊">😊</span>
+                            <span data-mood="😎">😎</span>
+                            <span data-mood="🥰">🥰</span>
+                            <span data-mood="😴">😴</span>
+                            <span data-mood="🤔">🤔</span>
+                            <span data-mood="😢">😢</span>
+                            <span data-mood="😡">😡</span>
+                            <span data-mood="🎉">🎉</span>
+                            <span data-mood="🌧️">🌧️</span>
+                            <span data-mood="☀️">☀️</span>
+                        </div>
+                    </div>
+                    <button class="upload-btn" id="uploadBtn">📷 图片</button>
+                    <input type="file" id="imageInput" accept="image/*" multiple hidden>
+                </div>
+                <button class="post-btn" id="postBtn" disabled>发布</button>
+            </div>
+        </div>
+
+        <!-- Skeleton Loading -->
+        <div id="skeletonArea">
+            <div class="skeleton-card">
+                <div class="skeleton-line short"></div>
+                <div class="skeleton-line" style="width:30%;height:10px;"></div>
+                <div class="skeleton-line"></div>
+                <div class="skeleton-line medium"></div>
+            </div>
+            <div class="skeleton-card">
+                <div class="skeleton-line short"></div>
+                <div class="skeleton-line" style="width:30%;height:10px;"></div>
+                <div class="skeleton-line medium"></div>
+                <div class="skeleton-line short"></div>
+            </div>
+        </div>
+
+        <!-- Posts Timeline -->
+        <div id="postsArea"></div>
+
+        <!-- Load More -->
+        <button class="load-more-btn" id="loadMoreBtn" style="display:none">加载更多</button>
+
+        <!-- Empty State -->
+        <div class="empty-state" id="emptyState" style="display:none">
+            <div class="empty-icon">📝</div>
+            <p>还没有动态，发布第一条吧~</p>
+        </div>
+    </div>
+
+    <!-- Notification Overlay -->
+    <div class="notification-overlay" id="notifOverlay"></div>
+    <div class="notification-panel" id="notifPanel">
+        <div class="notification-panel-header">
+            <h3>通知</h3>
+            <button id="closeNotifBtn">✕</button>
+        </div>
+        <div class="notification-list" id="notifList">
+            <div class="notification-empty">暂无通知</div>
+        </div>
+    </div>
+
+    <!-- Settings Overlay -->
+    <div class="settings-overlay" id="settingsOverlay">
+        <div class="settings-popup">
+            <h3>⚙️ 个性化设置</h3>
+            <div class="settings-group">
+                <label>封面背景图片</label>
+                <input type="file" id="coverFileInput" accept="image/*">
+                <small>从本地选择图片上传为封面背景</small>
+            </div>
+            <div class="settings-btn-row">
+                <button class="cancel-btn" id="settingsCancelBtn">取消</button>
+                <button class="save-btn" id="settingsSaveBtn">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Lightbox -->
+    <div class="lightbox-overlay" id="lightbox">
+        <img id="lightboxImg" src="" alt="">
+    </div>
+
+    <script>
+        // ==================== Config ====================
+        const API_PREFIX = '/api';
+        let currentTheme = 'light';
+        let currentMood = '';
+        let pendingImages = [];
+        let allPosts = [];
+        let totalPosts = 0;
+        let pageOffset = 0;
+        const PAGE_SIZE = 20;
+        let settings = {};
+        let appConfig = { ai_name: 'AI', user_name: '我' };
+
+        // ==================== Init ====================
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadAppConfig();
+            await loadSettings();
+            await loadPosts();
+            await loadNotifications();
+        });
+
+        // 从后端读取插件配置（ai_name, user_name 等）
+        async function loadAppConfig() {
+            try {
+                const data = await apiGet('/config');
+                if (data.ai_name) appConfig.ai_name = data.ai_name;
+                if (data.user_name) appConfig.user_name = data.user_name;
+            } catch (e) {
+                console.warn('加载配置失败，使用默认值', e);
+            }
+        }
+
+        // ==================== API Helpers ====================
+        async function apiGet(path, params = {}) {
+            const url = new URL(API_PREFIX + path, location.origin);
+            Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+            const res = await fetch(url);
+            return res.json();
+        }
+
+        async function apiPost(path, body = {}) {
+            const res = await fetch(API_PREFIX + path, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            return res.json();
+        }
+
+        function getImageUrl(filename) {
+            return `/images/${encodeURIComponent(filename)}`;
+        }
+
+        // ==================== Settings ====================
+        async function loadSettings() {
+            try {
+                const data = await apiGet('/settings');
+                settings = data;
+                applySettings(data);
+            } catch (e) {
+                console.error('加载设置失败', e);
+            }
+        }
+
+        function applySettings(s) {
+            // Theme
+            if (s.theme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                currentTheme = 'dark';
+                document.getElementById('darkModeBtn').textContent = '☀️';
+            }
+            // Cover image
+            const header = document.getElementById('coverHeader');
+            if (s.cover_image) {
+                header.style.backgroundImage = `url(${s.cover_image})`;
+                header.style.backgroundSize = 'cover';
+                header.style.backgroundPosition = 'center';
+            }
+            // Signature
+            if (s.signature) {
+                document.getElementById('sigText').textContent = s.signature;
+            }
+        }
+
+        async function saveSettings(updates) {
+            try {
+                await apiPost('/settings/update', updates);
+                Object.assign(settings, updates);
+            } catch (e) {
+                console.error('保存设置失败', e);
+            }
+        }
+
+        // ==================== Dark Mode ====================
+        document.getElementById('darkModeBtn').addEventListener('click', async () => {
+            currentTheme = currentTheme === 'light' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', currentTheme);
+            document.getElementById('darkModeBtn').textContent = currentTheme === 'dark' ? '☀️' : '🌙';
+            await saveSettings({ theme: currentTheme });
+        });
+
+        // ==================== Signature Edit ====================
+        document.getElementById('sigEditBtn').addEventListener('click', () => {
+            document.getElementById('sigText').style.display = 'none';
+            document.getElementById('sigEditBtn').style.display = 'none';
+            const container = document.getElementById('sigEditContainer');
+            container.style.display = 'flex';
+            const input = document.getElementById('sigInput');
+            input.value = document.getElementById('sigText').textContent;
+            input.focus();
+        });
+
+        document.getElementById('sigSaveBtn').addEventListener('click', async () => {
+            const val = document.getElementById('sigInput').value.trim() || 'Moment';
+            document.getElementById('sigText').textContent = val;
+            closeSigEdit();
+            await saveSettings({ signature: val });
+        });
+
+        document.getElementById('sigCancelBtn').addEventListener('click', closeSigEdit);
+
+        document.getElementById('sigInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') document.getElementById('sigSaveBtn').click();
+            if (e.key === 'Escape') closeSigEdit();
+        });
+
+        function closeSigEdit() {
+            document.getElementById('sigText').style.display = '';
+            document.getElementById('sigEditBtn').style.display = '';
+            document.getElementById('sigEditContainer').style.display = 'none';
+        }
+
+        // ==================== Settings Popup ====================
+        document.getElementById('settingsBtn').addEventListener('click', () => {
+            document.getElementById('settingsOverlay').classList.add('active');
+        });
+
+        document.getElementById('settingsCancelBtn').addEventListener('click', () => {
+            document.getElementById('settingsOverlay').classList.remove('active');
+        });
+
+        document.getElementById('settingsOverlay').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) {
+                document.getElementById('settingsOverlay').classList.remove('active');
+            }
+        });
+
+        document.getElementById('settingsSaveBtn').addEventListener('click', async () => {
+            const fileInput = document.getElementById('coverFileInput');
+            
+            if (fileInput.files && fileInput.files[0]) {
+                // 上传封面图片
+                const formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+                try {
+                    const res = await fetch('/api/upload/cover', { method: 'POST', body: formData });
+                    const data = await res.json();
+                    if (data.url) {
+                        await saveSettings({ cover_image: data.url });
+                        const header = document.getElementById('coverHeader');
+                        header.style.backgroundImage = `url(${data.url})`;
+                        header.style.backgroundSize = 'cover';
+                        header.style.backgroundPosition = 'center';
+                    }
+                } catch (e) {
+                    console.error('封面上传失败', e);
+                }
+            }
+
+            document.getElementById('settingsOverlay').classList.remove('active');
+        });
+
+        // ==================== Notifications ====================
+        document.getElementById('notifBtn').addEventListener('click', () => {
+            document.getElementById('notifOverlay').classList.add('active');
+            document.getElementById('notifPanel').classList.add('active');
+        });
+
+        document.getElementById('closeNotifBtn').addEventListener('click', closeNotifPanel);
+        document.getElementById('notifOverlay').addEventListener('click', closeNotifPanel);
+
+        function closeNotifPanel() {
+            document.getElementById('notifOverlay').classList.remove('active');
+            document.getElementById('notifPanel').classList.remove('active');
+            markNotificationsRead();
+        }
+
+        async function loadNotifications() {
+            try {
+                const data = await apiGet('/notifications');
+                const notifications = data.notifications || [];
+                const badge = document.getElementById('notifBadge');
+                if (notifications.length > 0) {
+                    badge.classList.add('active');
+                } else {
+                    badge.classList.remove('active');
+                }
+                renderNotifications(notifications);
+            } catch (e) {
+                console.error('加载通知失败', e);
+            }
+        }
+
+        function renderNotifications(notifications) {
+            const list = document.getElementById('notifList');
+            if (!notifications.length) {
+                list.innerHTML = '<div class="notification-empty">暂无通知</div>';
+                return;
+            }
+            list.innerHTML = notifications.map(n => `
+                <div class="notification-item">
+                    <div>${escapeHtml(n.content || n.message || '')}</div>
+                    <div class="notif-time">${formatTime(n.created_at)}</div>
+                </div>
+            `).join('');
+        }
+
+        async function markNotificationsRead() {
+            try {
+                await apiPost('/notifications/read');
+                document.getElementById('notifBadge').classList.remove('active');
+            } catch (e) {}
+        }
+
+        // ==================== Mood Selector ====================
+        document.getElementById('moodBtn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            document.getElementById('moodDropdown').classList.toggle('active');
+        });
+
+        document.getElementById('moodDropdown').addEventListener('click', (e) => {
+            const mood = e.target.dataset.mood;
+            if (mood) {
+                currentMood = mood;
+                document.getElementById('moodBtn').textContent = mood + ' 心情';
+                document.getElementById('moodDropdown').classList.remove('active');
+            }
+        });
+
+        document.addEventListener('click', () => {
+            document.getElementById('moodDropdown').classList.remove('active');
+            document.querySelectorAll('.reaction-picker.active').forEach(el => el.classList.remove('active'));
+        });
+
+        // ==================== Image Upload ====================
+        document.getElementById('uploadBtn').addEventListener('click', () => {
+            document.getElementById('imageInput').click();
+        });
+
+        document.getElementById('imageInput').addEventListener('change', (e) => {
+            const files = Array.from(e.target.files);
+            files.forEach(file => {
+                if (pendingImages.length >= 9) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    pendingImages.push(ev.target.result);
+                    renderImagePreviews();
+                };
+                reader.readAsDataURL(file);
+            });
+            e.target.value = '';
+        });
+
+        function renderImagePreviews() {
+            const area = document.getElementById('imagePreviewArea');
+            area.innerHTML = pendingImages.map((src, i) => `
+                <div class="preview-thumb">
+                    <img src="${src}" alt="">
+                    <button class="remove-img" onclick="removeImage(${i})">✕</button>
+                </div>
+            `).join('');
+            updatePostBtn();
+        }
+
+        function removeImage(index) {
+            pendingImages.splice(index, 1);
+            renderImagePreviews();
+        }
+
+        // ==================== Compose ====================
+        const composeText = document.getElementById('composeText');
+        const postBtn = document.getElementById('postBtn');
+
+        composeText.addEventListener('input', updatePostBtn);
+
+        function updatePostBtn() {
+            postBtn.disabled = !composeText.value.trim() && pendingImages.length === 0;
+        }
+
+        postBtn.addEventListener('click', async () => {
+            const content = composeText.value.trim();
+            if (!content && pendingImages.length === 0) return;
+
+            postBtn.disabled = true;
+            postBtn.textContent = '发布中...';
+
+            try {
+                // Upload images first
+                let imageFilenames = [];
+                for (const imgData of pendingImages) {
+                    const res = await apiPost('/upload', { image: imgData });
+                    if (res.filename) imageFilenames.push(res.filename);
+                }
+
+                const res = await apiPost('/posts/create', {
+                    content,
+                    mood: currentMood,
+                    images: imageFilenames.join(','),
+                });
+
+                if (res.post) {
+                    allPosts.unshift(res.post);
+                    totalPosts++;
+                    renderPosts();
+                    composeText.value = '';
+                    currentMood = '';
+                    pendingImages = [];
+                    document.getElementById('moodBtn').textContent = '😊 心情';
+                    renderImagePreviews();
+                }
+            } catch (e) {
+                console.error('发布失败', e);
+            }
+
+            postBtn.disabled = false;
+            postBtn.textContent = '发布';
+            updatePostBtn();
+        });
+
+        // ==================== Load Posts ====================
+        async function loadPosts(append = false) {
+            try {
+                if (!append) {
+                    pageOffset = 0;
+                    document.getElementById('skeletonArea').style.display = '';
+                }
+                const data = await apiGet('/posts', { limit: PAGE_SIZE, offset: pageOffset });
+                const posts = data.posts || [];
+                totalPosts = data.total || 0;
+
+                if (append) {
+                    allPosts = allPosts.concat(posts);
+                } else {
+                    allPosts = posts;
+                }
+
+                document.getElementById('skeletonArea').style.display = 'none';
+                renderPosts();
+                updateLoadMore();
+            } catch (e) {
+                document.getElementById('skeletonArea').style.display = 'none';
+                console.error('加载帖子失败', e);
+            }
+        }
+
+        function updateLoadMore() {
+            const btn = document.getElementById('loadMoreBtn');
+            btn.style.display = allPosts.length < totalPosts ? '' : 'none';
+        }
+
+        document.getElementById('loadMoreBtn').addEventListener('click', () => {
+            pageOffset += PAGE_SIZE;
+            loadPosts(true);
+        });
+
+        // ==================== Render Posts ====================
+        function renderPosts() {
+            const area = document.getElementById('postsArea');
+            const emptyState = document.getElementById('emptyState');
+
+            if (allPosts.length === 0) {
+                area.innerHTML = '';
+                emptyState.style.display = '';
+                return;
+            }
+
+            emptyState.style.display = 'none';
+            area.innerHTML = allPosts.map(post => renderPostCard(post)).join('');
+        }
+
+        function renderPostCard(post) {
+            const isAI = post.author === 'ai';
+            const authorName = isAI ? appConfig.ai_name : appConfig.user_name;
+            const mood = post.mood ? `<span class="post-mood">${post.mood}</span>` : '';
+            const imagesHtml = renderPostImages(post.images);
+            const reactionsHtml = renderReactions(post);
+            const commentsHtml = renderComments(post);
+
+            return `
+                <div class="post-card" data-id="${post.id}">
+                    <div class="post-header">
+                        <div class="post-meta">
+                            <div class="post-author">${escapeHtml(authorName)}</div>
+                            <div class="post-time">${formatTime(post.created_at)}</div>
+                        </div>
+                        ${mood}
+                    </div>
+                    <div class="post-content">${escapeHtml(post.content)}</div>
+                    ${imagesHtml}
+                    ${reactionsHtml}
+                    <div class="post-actions">
+                        <button onclick="toggleComments(${post.id})">💬 评论</button>
+                        <button onclick="showReactionPicker(event, ${post.id})">😊 表情</button>
+                        <button class="post-delete-btn" onclick="deletePost(${post.id})">🗑️ 删除</button>
+                    </div>
+                    <div class="reaction-picker" id="picker-${post.id}">
+                        <span onclick="toggleReaction(${post.id},'❤️')">❤️</span>
+                        <span onclick="toggleReaction(${post.id},'👍')">👍</span>
+                        <span onclick="toggleReaction(${post.id},'😂')">😂</span>
+                        <span onclick="toggleReaction(${post.id},'😮')">😮</span>
+                        <span onclick="toggleReaction(${post.id},'😢')">😢</span>
+                        <span onclick="toggleReaction(${post.id},'🔥')">🔥</span>
+                    </div>
+                    ${commentsHtml}
+                </div>
+            `;
+        }
+
+
+
+        function renderPostImages(images) {
+            if (!images) return '';
+            const list = images.split(',').filter(Boolean);
+            if (list.length === 0) return '';
+
+            const gridClass = `grid-${Math.min(list.length, 4)}`;
+            const imgs = list.map(f => `<img src="${getImageUrl(f)}" alt="" onclick="openLightbox(this.src)">`).join('');
+            return `<div class="post-images ${gridClass}">${imgs}</div>`;
+        }
+
+        function renderReactions(post) {
+            const reactions = post.reactions || [];
+            if (reactions.length === 0) return '';
+
+            const chips = reactions.map(r => {
+                const isActive = r.authors && r.authors.includes('user');
+                return `<span class="reaction-chip ${isActive ? 'active' : ''}" onclick="toggleReaction(${post.id},'${r.emoji}')">${r.emoji} ${r.count || 1}</span>`;
+            }).join('');
+
+            return `<div class="reactions-bar">${chips}</div>`;
+        }
+
+        function renderComments(post) {
+            const comments = post.comments || [];
+            if (comments.length === 0 && !post._showComments) return '';
+
+            // 如果隐藏，则直接返回空
+            if (!post._showComments) return '';
+
+            const commentItems = comments.map(c => {
+                const isAI = c.author === 'ai';
+                const name = isAI ? appConfig.ai_name : appConfig.user_name;
+                
+                // 判断是否是回复（真实层级，即有 parent_comment_id，或者简单判定：AI 并且有 parent_comment_id）
+                // 数据库里其实已经记录了 parent_comment_id
+                let replyHtml = '';
+                if (isAI && c.parent_comment_id) {
+                    replyHtml = `<span style="color:var(--text-muted); margin: 0 4px; font-weight: normal;">回复</span><span class="comment-author">${escapeHtml(appConfig.user_name)}</span>`;
+                }
+
+                return `
+                    <div class="comment-item">
+                        <span class="comment-author">${escapeHtml(name)}</span>${replyHtml}：
+                        <span class="comment-text">${escapeHtml(c.content)}</span>
+                    </div>
+                `;
+            }).join('');
+
+            return `
+                <div class="comments-section" id="comments-${post.id}">
+                    ${commentItems}
+                    <div class="comment-input-row" style="margin-top: 8px;">
+                        <input type="text" id="comment-input-${post.id}" placeholder="写评论..." onkeydown="if(event.key==='Enter')submitComment(${post.id})">
+                        <button onclick="submitComment(${post.id})" style="background: none; border: none; color: var(--accent); cursor: pointer; font-weight: 500;">发送</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // ==================== Post Actions ====================
+        function toggleComments(postId) {
+            const post = allPosts.find(p => p.id === postId);
+            if (!post) return;
+            post._showComments = !post._showComments;
+            if (post._showComments && !post.comments) {
+                loadComments(postId);
+            } else {
+                renderPosts();
+            }
+        }
+
+        async function loadComments(postId) {
+            try {
+                const data = await apiGet('/comments', { post_id: postId });
+                const post = allPosts.find(p => p.id === postId);
+                if (post) {
+                    post.comments = data.comments || [];
+                    post._showComments = true;
+                    renderPosts();
+                }
+            } catch (e) {
+                console.error('加载评论失败', e);
+            }
+        }
+
+        async function submitComment(postId) {
+            const input = document.getElementById(`comment-input-${postId}`);
+            const content = input.value.trim();
+            if (!content) return;
+
+            try {
+                const res = await apiPost('/comments/create', {
+                    post_id: postId,
+                    content,
+                });
+                if (res.comment) {
+                    const post = allPosts.find(p => p.id === postId);
+                    if (post) {
+                        if (!post.comments) post.comments = [];
+                        post.comments.push(res.comment);
+                        renderPosts();
+                    }
+                }
+            } catch (e) {
+                console.error('发送评论失败', e);
+            }
+        }
+
+        function showReactionPicker(event, postId) {
+            event.stopPropagation();
+            document.querySelectorAll('.reaction-picker.active').forEach(el => el.classList.remove('active'));
+            const picker = document.getElementById(`picker-${postId}`);
+            picker.classList.add('active');
+        }
+
+        async function toggleReaction(postId, emoji) {
+            try {
+                const res = await apiPost('/reactions/toggle', { post_id: postId, emoji });
+                const post = allPosts.find(p => p.id === postId);
+                if (post && res.reactions) {
+                    post.reactions = res.reactions;
+                    renderPosts();
+                }
+            } catch (e) {
+                console.error('操作失败', e);
+            }
+        }
+
+        async function deletePost(postId) {
+            if (!confirm('确定删除这条动态吗？')) return;
+            try {
+                await apiPost('/posts/delete', { id: postId });
+                allPosts = allPosts.filter(p => p.id !== postId);
+                totalPosts--;
+                renderPosts();
+                updateLoadMore();
+            } catch (e) {
+                console.error('删除失败', e);
+            }
+        }
+
+        // ==================== Lightbox ====================
+        function openLightbox(src) {
+            document.getElementById('lightboxImg').src = src;
+            document.getElementById('lightbox').classList.add('active');
+        }
+
+        document.getElementById('lightbox').addEventListener('click', () => {
+            document.getElementById('lightbox').classList.remove('active');
+        });
+
+        // ==================== Utils ====================
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function formatTime(ts) {
+            if (!ts) return '';
+            const date = new Date(ts.includes('T') ? ts : ts.replace(' ', 'T'));
+            const now = new Date();
+            const diff = (now - date) / 1000;
+
+            if (diff < 60) return '刚刚';
+            if (diff < 3600) return Math.floor(diff / 60) + '分钟前';
+            if (diff < 86400) return Math.floor(diff / 3600) + '小时前';
+            if (diff < 604800) return Math.floor(diff / 86400) + '天前';
+
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            const h = String(date.getHours()).padStart(2, '0');
+            const min = String(date.getMinutes()).padStart(2, '0');
+            return y === now.getFullYear() ? `${m}-${d} ${h}:${min}` : `${y}-${m}-${d}`;
+        }
+    </script>
+</body>
+</html>
