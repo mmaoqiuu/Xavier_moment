@@ -20,9 +20,9 @@
   },
 
   "ai_name": {
-    "description": "AI 的显示名",
+    "description": "他的显示名",
     "type": "string",
-    "hint": "AI 在朋友圈里显示的名字。留空则默认显示「他」。例如填「小回」，则帖子署名会显示为「小回」。",
+    "hint": "他在朋友圈里显示的名字。留空则默认显示「他」。例如填「小回」，则帖子署名会显示为「小回」。",
     "default": "他"
   },
   "user_name": {
@@ -33,84 +33,84 @@
   },
 
   "ai_post_enabled": {
-    "description": "AI 自动发帖",
+    "description": "自动发帖",
     "type": "bool",
-    "hint": "开启后 AI 会每天不定时发布动态。内容来源于人设 prompt、知识库和记忆插件（如有），但不会照搬原文。关闭后 AI 只能被动回复你的评论，不会主动发帖。",
+    "hint": "开启后他会每天不定时发布动态。内容会参考人设 prompt。关闭后他只能被动回复你的评论，不会主动发帖。",
     "default": true
   },
-  "ai_post_count_per_day": {
-    "description": "每日发帖数量",
-    "type": "int",
-    "hint": "AI 每天自动发布几条动态。实际发布时间会在下方设定的时间段内随机分布，模拟真人发朋友圈的不规律感。建议 1~3 条，太多会显得刷屏。",
-    "default": 2
+  "ai_post_count_range": {
+    "description": "每日发帖数量区间",
+    "type": "string",
+    "hint": "填入如「1-3」或「0-2」，AI 每天的发帖数量将在这个区间内随机波动。填 0 表示当天可能完全不发帖，更具真实感。",
+    "default": "1-3"
   },
   "ai_post_time_ranges": {
     "description": "发帖时间段",
     "type": "string",
-    "hint": "AI 发帖的时间窗口，格式如「9:00-11:00,19:00-22:00」。多个时间段用英文逗号分隔。AI 会在这些时段内随机选一个时间点发帖。建议设在你可能在线的时段，这样通知到了你能及时看到。",
+    "hint": "他发帖的时间窗口，格式如「9:00-11:00,19:00-22:00」。多个时间段用英文逗号分隔。他会在这些时段内随机选一个时间点发帖。建议设在你可能在线的时段。",
     "default": "9:00-11:00,19:00-22:00"
   },
 
   "ai_comment_enabled": {
-    "description": "AI 自动评论",
+    "description": "自动评论",
     "type": "bool",
-    "hint": "开启后 AI 会自动对你发布的新动态进行评论（像朋友给你点赞+留言）。同时当你评论了 AI 的帖子时，AI 也会回复你的评论。",
+    "hint": "开启后他会自动对你发布的新动态进行评论。同时当你评论了他的帖子时，他也会回复你的评论。",
     "default": true
   },
 
   "random_post_topics": {
     "description": "发帖话题库",
     "type": "string",
-    "hint": "AI 每天发帖时会从这里随机抽取一个词作为当天的发帖主题（例如「音乐,科幻,下雨天,摸鱼」）。多个话题用英文逗号分隔。写得越丰富，AI 发帖的内容越多样。",
+    "hint": "他每天发帖时会从这里随机抽取一个词作为当天的发帖主题（例如「音乐,游戏,天气,摸鱼」）。多个话题用英文逗号分隔。写得越丰富，他发帖的内容越多样。",
     "default": "日常,美食,心情,音乐,阅读,小发现"
   },
 
   "post_style_prompt": {
     "description": "发帖风格提示词",
     "type": "text",
-    "hint": "自定义 AI 发帖时的风格引导。留空使用内置默认值（基于角色人设自然发挥）。你可以在这里详细描述 AI 应该以什么口吻、什么风格来发帖，比如：「发帖要简短，1~3句话，偶尔用 emoji，像个 20 岁大学生发微博」。这段内容会作为 LLM 提示词的一部分。",
+    "hint": "自定义他发帖时的风格引导。留空使用内置默认值（基于角色人设自然发挥）。你可以在这里详细描述他应该以什么口吻、什么风格来发帖，比如：「发帖要简短，1~3句话，偶尔用 emoji，像个 20 岁大学生发微博」。这段内容会作为 LLM 提示词的一部分。",
     "default": ""
   },
 
   "advanced_mode": {
     "description": "⚙️ 启用高级配置",
     "type": "bool",
-    "hint": "开启后显示 AI 评论延迟、发帖去重、LLM 模型选择等高级参数。一般用户无需开启。",
+    "hint": "开启后显示他评论延迟、发帖去重、LLM 模型选择等高级参数。",
     "default": false
   },
 
   "ai_comment_delay_minutes": {
-    "description": "AI 评论延迟（分钟）",
+    "description": "他评论延迟（分钟）",
     "type": "int",
-    "hint": "你发帖后 AI 等待多少分钟再发表评论。模拟真人看到朋友圈后不是秒回的感觉。设 0 表示立即评论（但会显得像机器人）。推荐 2~10 分钟。",
+    "hint": "你发帖后他等待多少分钟再发表评论。模拟真人看到朋友圈后不是秒回的感觉。设 0 表示立即评论（但会显得像机器人）。推荐 2~10 分钟。",
     "default": 3,
     "condition": { "advanced_mode": true }
   },
   "ai_reply_delay_minutes": {
-    "description": "AI 回复评论延迟（分钟）",
+    "description": "他回复评论延迟（分钟）",
     "type": "int",
-    "hint": "你评论 AI 的帖子后，AI 等多久再回复你的评论。可以和评论延迟设不同值，制造自然感。",
+    "hint": "你评论他的帖子后，他等多久再回复你的评论。可以和评论延迟设不同值，制造自然感。",
     "default": 2,
     "condition": { "advanced_mode": true }
   },
   "ai_post_min_interval_hours": {
     "description": "最短发帖间隔（小时）",
     "type": "float",
-    "hint": "两条 AI 帖子之间至少间隔多久。防止 AI 在一个时间段内连发多条。设 2 表示至少隔 2 小时。",
+    "hint": "两条帖子之间至少间隔多久。防止他在一个时间段内连发多条。设 2 表示至少隔 2 小时。",
     "default": 2.0,
     "condition": { "advanced_mode": true }
   },
   "dedup_similarity_threshold": {
     "description": "发帖去重阈值",
     "type": "float",
-    "hint": "AI 新帖与最近 10 条帖子的文本相似度超过此值时，会被丢弃重新生成。0.8 表示内容 80% 相似就算重复。范围 0.5~0.95，值越低越严格。",
+    "hint": "他新帖与最近 10 条帖子的文本相似度超过此值时，会被丢弃重新生成。0.8 表示内容 80% 相似就算重复。范围 0.5~0.95，值越低越严格。",
     "default": 0.75,
     "condition": { "advanced_mode": true }
   },
   "llm_provider_id": {
     "description": "发帖/评论用的 LLM 模型",
     "type": "string",
-    "hint": "用于生成帖子和评论的 LLM Provider ID。留空则使用 AstrBot 当前默认对话模型。如果你想让朋友圈的 AI 用更便宜/更快的模型，可以在这里指定。在 AstrBot 后台「LLM 配置」中查看已有的 Provider ID。",
+    "hint": "用于生成帖子和评论的 LLM Provider ID。留空则使用 AstrBot 当前默认对话模型。如果你想用更便宜/更快的模型，可以在这里指定。在 AstrBot 后台「LLM 配置」中查看已有的 Provider ID。",
     "_special": "select_provider",
     "default": "",
     "condition": { "advanced_mode": true }
@@ -118,7 +118,7 @@
   "max_post_length": {
     "description": "帖子最大字数",
     "type": "int",
-    "hint": "AI 发帖时内容的最大字数限制。超过此长度会被截断。真实微博一般 140 字，朋友圈可以更长。",
+    "hint": "他发帖时内容的最大字数限制。超过此长度会被截断。真实微博一般 140 字，朋友圈可以更长。",
     "default": 280,
     "condition": { "advanced_mode": true }
   },
@@ -140,22 +140,15 @@
   "use_persona_for_post": {
     "description": "发帖时读取人设 prompt",
     "type": "bool",
-    "hint": "AI 发帖时是否注入当前角色人设作为语境。开启后 AI 会保持和对话时一致的性格与语气发帖。关闭则以纯通用风格发帖。",
+    "hint": "他发帖时是否注入当前角色人设作为语境。开启后 他会保持和对话时一致的性格与语气发帖。关闭则以纯通用风格发帖。",
     "default": true,
     "condition": { "advanced_mode": true }
   },
   "post_with_emoji": {
     "description": "帖子允许 emoji",
     "type": "bool",
-    "hint": "AI 发帖和评论时是否允许使用 emoji 表情。有些角色设定不适合用 emoji（比如冷酷型角色），可以关掉。",
+    "hint": "他发帖和评论时是否允许使用 emoji 表情。有些角色设定不适合用 emoji（比如冷酷型角色），可以关掉。",
     "default": true,
-    "condition": { "advanced_mode": true }
-  },
-  "disabled_sessions": {
-    "description": "禁用通知的会话列表",
-    "type": "list",
-    "hint": "在此列表中的 session_id 不会收到本插件的任何通知推送。可用于屏蔽某些群聊。",
-    "default": [],
     "condition": { "advanced_mode": true }
   }
 }

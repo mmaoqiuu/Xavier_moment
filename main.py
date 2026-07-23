@@ -315,5 +315,6 @@ class MomentPlugin(Star):
 
     async def _send_notification(self, message: str, post_id: int = None, ntype: str = "new_post"):
         """存储通知到数据库（仅用于网页通知面板，不推送到聊天）。"""
+        # (旧版本用来控制是否推送到当前群聊，现已屏蔽消息推送逻辑)
         if self.db:
             await self.db.create_notification(ntype, message, ref_post_id=post_id)
