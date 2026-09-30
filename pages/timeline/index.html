@@ -578,6 +578,28 @@
             color: var(--danger) !important;
         }
 
+        /* Like（点赞，和表情贴纸分开） */
+        .post-actions button.like-btn.liked {
+            color: #e0526b;
+        }
+
+        .post-actions button.like-btn.liked:hover {
+            color: #c94363;
+        }
+
+        .like-line {
+            font-size: 12px;
+            color: var(--text-muted);
+            line-height: 1.6;
+            margin-bottom: 8px;
+            word-break: break-word;
+        }
+
+        .like-line span {
+            color: var(--accent);
+            font-weight: 500;
+        }
+
         /* Comments */
         .comments-section {
             margin-top: 10px;
@@ -617,6 +639,51 @@
         }
 
         .comment-reply-btn:hover {
+            color: var(--accent);
+        }
+
+        .comment-delete-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 11px;
+            cursor: pointer;
+            margin-left: 8px;
+        }
+
+        .comment-delete-btn:hover {
+            color: var(--danger);
+        }
+
+        .comments-count {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+        }
+
+        .comment-author-npc {
+            color: #7b8ec9;
+        }
+
+        .reply-hint {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+
+        .reply-hint button {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 12px;
+            padding: 0;
+        }
+
+        .reply-hint button:hover {
             color: var(--accent);
         }
 
@@ -1170,7 +1237,7 @@
         let pageOffset = 0;
         const PAGE_SIZE = 20;
         let settings = {};
-        let appConfig = { ai_name: 'AI', user_name: '我' };
+        let appConfig = { ai_name: 'AI', user_name: '我', like_enabled: true };
 
         // ==================== Init ====================
         document.addEventListener('DOMContentLoaded', async () => {
@@ -1186,6 +1253,7 @@
                 const data = await apiGet('/config');
                 if (data.ai_name) appConfig.ai_name = data.ai_name;
                 if (data.user_name) appConfig.user_name = data.user_name;
+                appConfig.like_enabled = data.like_enabled !== false;
             } catch (e) {
                 console.warn('加载配置失败，使用默认值', e);
             }
@@ -1546,6 +1614,9 @@
             const imagesHtml = renderPostImages(post.images);
             const reactionsHtml = renderReactions(post);
             const commentsHtml = renderComments(post);
+            const likeEnabled = appConfig.like_enabled !== false;
+            const likeBtnHtml = likeEnabled ? `<button class="like-btn ${post.likes && post.likes.liked_by_me ? 'liked' : ''}" onclick="toggleLike(${post.id})">${post.likes && post.likes.liked_by_me ? '❤️' : '🤍'} 赞${post.likes && post.likes.count ? ' · ' + post.likes.count : ''}</button>` : '';
+            const likeLineHtml = likeEnabled ? renderLikeLine(post) : '';
 
             return `
                 <div class="post-card" data-id="${post.id}">
@@ -1559,8 +1630,10 @@
                     <div class="post-content">${escapeHtml(post.content)}</div>
                     ${imagesHtml}
                     ${reactionsHtml}
+                    ${likeLineHtml}
                     <div class="post-actions">
-                        <button onclick="toggleComments(${post.id})">💬 评论</button>
+                        ${likeBtnHtml}
+                        <button onclick="toggleComments(${post.id})">💬 评论${post.comment_count ? ' · ' + post.comment_count : ''}</button>
                         <button onclick="showReactionPicker(event, ${post.id})">😊 表情</button>
                         <button class="post-delete-btn" onclick="deletePost(${post.id})">🗑️ 删除</button>
                     </div>
@@ -1601,38 +1674,74 @@
             return `<div class="reactions-bar">${chips}</div>`;
         }
 
-        function renderComments(post) {
-            const comments = post.comments || [];
-            if (comments.length === 0 && !post._showComments) return '';
+        function renderLikeLine(post) {
+            const names = (post.likes && post.likes.names) ? post.likes.names.filter(Boolean) : [];
+            if (names.length === 0) return '';
+            return `<div class="like-line">❤️ <span>${escapeHtml(names.join('、'))}</span> 觉得很赞</div>`;
+        }
 
-            // 如果隐藏，则直接返回空
+        async function toggleLike(postId) {
+            try {
+                const res = await apiPost('/likes/toggle', { post_id: postId });
+                const post = allPosts.find(p => p.id === postId);
+                if (post && res.likes) {
+                    post.likes = res.likes;
+                    renderPosts();
+                }
+            } catch (err) {
+                console.error('点赞失败', err);
+            }
+        }
+
+        function commentDisplayName(c) {
+            if (!c) return '';
+            if (c.author === 'npc') return c.author_name || '朋友';
+            if (c.author === 'ai') return appConfig.ai_name || '他';
+            return appConfig.user_name || '我';
+        }
+
+        function findComment(post, commentId) {
+            if (!post || !commentId) return null;
+            return (post.comments || []).find(c => c.id === commentId) || null;
+        }
+
+        function renderComments(post) {
+            // 没展开就不渲染（评论是点开时才去拉的）
             if (!post._showComments) return '';
+            const comments = post.comments || [];
 
             const commentItems = comments.map(c => {
-                const isAI = c.author === 'ai';
-                const name = isAI ? appConfig.ai_name : appConfig.user_name;
-                
-                // 判断是否是回复（真实层级，即有 parent_comment_id，或者简单判定：AI 并且有 parent_comment_id）
-                // 数据库里其实已经记录了 parent_comment_id
-                let replyHtml = '';
-                if (isAI && c.parent_comment_id) {
-                    replyHtml = `<span style="color:var(--text-muted); margin: 0 4px; font-weight: normal;">回复</span><span class="comment-author">${escapeHtml(appConfig.user_name)}</span>`;
-                }
+                // 谁回复谁：只要 parent 能在本帖里找到，就把被回复的那位显示出来
+                const parent = findComment(post, c.parent_comment_id);
+                const replyHtml = parent
+                    ? `<span style="color:var(--text-muted); margin: 0 4px; font-weight: normal;">回复</span><span class="comment-author">${escapeHtml(commentDisplayName(parent))}</span>`
+                    : '';
+                const nameClass = c.author === 'npc' ? 'comment-author comment-author-npc' : 'comment-author';
 
                 return `
-                    <div class="comment-item">
-                        <span class="comment-author">${escapeHtml(name)}</span>${replyHtml}：
+                    <div class="comment-item" id="comment-${c.id}">
+                        <span class="${nameClass}">${escapeHtml(commentDisplayName(c))}</span>${replyHtml}：
                         <span class="comment-text">${escapeHtml(c.content)}</span>
+                        <button class="comment-reply-btn" onclick="startReply(${post.id}, ${c.id})">回复</button>
+                        ${c.author === 'user' ? `<button class="comment-delete-btn" onclick="deleteComment(${post.id}, ${c.id})">删除</button>` : ''}
                     </div>
                 `;
             }).join('');
 
+            const count = comments.length;
             return `
                 <div class="comments-section" id="comments-${post.id}">
+                    <div class="comments-count">${count > 0 ? '共 ' + count + ' 条评论' : '还没有评论，来说一句吧'}</div>
                     ${commentItems}
-                    <div class="comment-input-row" style="margin-top: 8px;">
-                        <input type="text" id="comment-input-${post.id}" placeholder="写评论..." onkeydown="if(event.key==='Enter')submitComment(${post.id})">
-                        <button onclick="submitComment(${post.id})" style="background: none; border: none; color: var(--accent); cursor: pointer; font-weight: 500;">发送</button>
+                    <div class="comments-input-wrap" style="margin-top: 8px;">
+                        <div class="reply-hint" id="reply-hint-${post.id}" style="display: none;">
+                            <span>回复 <span id="reply-target-${post.id}"></span></span>
+                            <button onclick="cancelReply(${post.id})">✕ 取消</button>
+                        </div>
+                        <div class="comment-input-row">
+                            <input type="text" id="comment-input-${post.id}" placeholder="写评论..." onkeydown="if(event.key==='Enter')submitComment(${post.id})">
+                            <button onclick="submitComment(${post.id})" style="background: none; border: none; color: var(--accent); cursor: pointer; font-weight: 500;">发送</button>
+                        </div>
                     </div>
                 </div>
             `;
@@ -1669,22 +1778,74 @@
             const content = input.value.trim();
             if (!content) return;
 
+            const post = allPosts.find(p => p.id === postId);
+            const parentId = post ? (post._replyTo || null) : null;
+
             try {
                 const res = await apiPost('/comments/create', {
                     post_id: postId,
                     content,
+                    parent_comment_id: parentId,
                 });
                 if (res.comment) {
-                    const post = allPosts.find(p => p.id === postId);
                     if (post) {
                         if (!post.comments) post.comments = [];
                         post.comments.push(res.comment);
-                        renderPosts();
+                        post.comment_count = (post.comment_count || 0) + 1;
+                        post._replyTo = null;
                     }
+                    renderPosts();
                 }
             } catch (e) {
                 console.error('发送评论失败', e);
             }
+        }
+
+        async function deleteComment(postId, commentId) {
+            if (!confirm('确定删除这条评论吗？')) return;
+            try {
+                await apiPost('/comments/delete', { comment_id: commentId });
+                const post = allPosts.find(p => p.id === postId);
+                if (post && post.comments) {
+                    // 子回复在数据库里是级联删掉的，这里保持一致，别留下孤儿回复
+                    post.comments = post.comments.filter(
+                        c => c.id !== commentId && c.parent_comment_id !== commentId
+                    );
+                    post.comment_count = post.comments.length;
+                }
+                renderPosts();
+            } catch (e) {
+                console.error('删除评论失败', e);
+            }
+        }
+
+        function startReply(postId, commentId) {
+            const post = allPosts.find(p => p.id === postId);
+            if (!post) return;
+            const target = findComment(post, commentId);
+            if (!target) return;
+            post._replyTo = commentId;
+
+            const hint = document.getElementById(`reply-hint-${postId}`);
+            const nameEl = document.getElementById(`reply-target-${postId}`);
+            if (hint && nameEl) {
+                nameEl.textContent = '@' + commentDisplayName(target);
+                hint.style.display = 'flex';
+            }
+            const input = document.getElementById(`comment-input-${postId}`);
+            if (input) {
+                input.placeholder = `回复 ${commentDisplayName(target)}...`;
+                input.focus();
+            }
+        }
+
+        function cancelReply(postId) {
+            const post = allPosts.find(p => p.id === postId);
+            if (post) post._replyTo = null;
+            const hint = document.getElementById(`reply-hint-${postId}`);
+            if (hint) hint.style.display = 'none';
+            const input = document.getElementById(`comment-input-${postId}`);
+            if (input) input.placeholder = '写评论...';
         }
 
         function showReactionPicker(event, postId) {

@@ -32,11 +32,12 @@ class PostEngine:
         self.context = context
         self.config = config
 
-    async def generate_post(self, materials: dict) -> Optional[dict]:
+    async def generate_post(self, materials: dict, extra_context: str = "") -> Optional[dict]:
         """基于收集到的素材，用 LLM 生成一条动态。
 
         Args:
             materials: MaterialCollector.collect() 的返回值
+            extra_context: 额外注入的上下文（如最近的私聊），可为空
 
         Returns:
             {"content": str, "mood": str} 或 None（生成失败时）
@@ -44,6 +45,9 @@ class PostEngine:
         try:
             # 构建 prompt
             prompt = self._build_prompt(materials)
+            # 追加额外上下文（如最近的私聊），避免发帖内容和私聊里刚说的话打架
+            if extra_context:
+                prompt = extra_context + "\n\n" + prompt
 
             # 调用 LLM
             # 用人设作为 system_prompt，让 AI 始终保持角色

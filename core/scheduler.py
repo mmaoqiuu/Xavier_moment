@@ -95,7 +95,23 @@ class Scheduler:
 
     def _plan_today(self) -> list[datetime]:
         """根据配置规划今天的发帖时间点。"""
-        count = int(self.config.get("ai_post_count_per_day", 2))
+        # 解析发帖数量区间
+        range_str = str(self.config.get("ai_post_count_range", "1-3")).strip()
+        try:
+            if "-" in range_str:
+                min_c, max_c = map(int, range_str.split("-"))
+                min_c, max_c = min(min_c, max_c), max(min_c, max_c)
+                count = random.randint(min_c, max_c)
+            else:
+                count = int(range_str)
+        except Exception:
+            count = 2
+            logger.warning(f"[moment] 发帖数量区间格式错误: {range_str}，回退到默认发帖 2 条")
+
+        if count <= 0:
+            logger.info("[moment] 今日随机发帖数为 0，今天不发帖。")
+            return []
+
         time_ranges_str = self.config.get("ai_post_time_ranges", "9:00-11:00,19:00-22:00")
 
         # 解析时间段
@@ -107,20 +123,40 @@ class Scheduler:
         # 在时间段内随机生成时间点
         today = datetime.now().date()
         points = []
+        min_interval = float(self.config.get("ai_post_min_interval_hours", 2.0)) * 3600
+        
+        max_attempts = 100  # 防止死循环
         for _ in range(count):
-            # 随机选择一个时间段
-            start_h, start_m, end_h, end_m = random.choice(ranges)
-            start_dt = datetime(today.year, today.month, today.day, start_h, start_m)
-            end_dt = datetime(today.year, today.month, today.day, end_h, end_m)
+            for attempt in range(max_attempts):
+                # 随机选择一个时间段
+                start_h, start_m, end_h, end_m = random.choice(ranges)
+                start_dt = datetime(today.year, today.month, today.day, start_h, start_m)
+                end_dt = datetime(today.year, today.month, today.day, end_h, end_m)
 
-            if end_dt <= start_dt:
-                continue
+                if end_dt <= start_dt:
+                    continue
 
-            # 在这个时间段内随机一个时刻
-            delta = (end_dt - start_dt).total_seconds()
-            random_offset = random.uniform(0, delta)
-            target = start_dt + timedelta(seconds=random_offset)
-            points.append(target)
+                # 在这个时间段内随机一个时刻
+                delta = (end_dt - start_dt).total_seconds()
+                random_offset = random.uniform(0, delta)
+                target = start_dt + timedelta(seconds=random_offset)
+                
+                # 检查与已生成的时间点是否满足最小间隔
+                if not points:
+                    points.append(target)
+                    break
+                    
+                is_valid = True
+                for p in points:
+                    if abs((target - p).total_seconds()) < min_interval:
+                        is_valid = False
+                        break
+                        
+                if is_valid:
+                    points.append(target)
+                    break
+            else:
+                logger.warning(f"[moment] 无法为第 {len(points)+1} 个帖子找到满足 {min_interval/3600} 小时间隔的时间点，尝试次数超限")
 
         # 排序
         points.sort()

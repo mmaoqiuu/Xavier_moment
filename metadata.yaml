@@ -1,7 +1,7 @@
 name: astrbot_plugin_moment
-display_name: Moment 朋友圈
-desc: 让 AI 和你都能发布动态、互相评论，像真实朋友一样分享日常生活。
-short_desc: AI 与你的私密朋友圈
-version: v0.1.0
-author: YuanYuan
-repo: https://github.com/你的用户名/astrbot_plugin_moment
+display_name: Moment
+desc: 让他和你都能发布动态、互相评论，分享日常生活；支持 NPC 评论、评论回复与朋友圈近况注入聊天。
+short_desc: 他与你的私密朋友圈（含 NPC 评论）
+version: 0.4.1
+author: 源源
+repo: https://github.com/AtomBombBaby-OVO/astrbot_plugin_moment

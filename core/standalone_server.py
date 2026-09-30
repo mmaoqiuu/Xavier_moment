@@ -49,10 +49,12 @@ class MomentServer:
         app.router.add_post("/api/posts/delete", self._handle_delete_post)
         app.router.add_get("/api/comments", self._handle_get_comments)
         app.router.add_post("/api/comments/create", self._handle_create_comment)
+        app.router.add_post("/api/comments/delete", self._handle_delete_comment)
         app.router.add_get("/api/notifications", self._handle_get_notifications)
         app.router.add_post("/api/notifications/read", self._handle_mark_read)
         app.router.add_get("/api/stats", self._handle_get_stats)
         app.router.add_post("/api/reactions/toggle", self._handle_toggle_reaction)
+        app.router.add_post("/api/likes/toggle", self._handle_toggle_like)
         app.router.add_post("/api/upload", self._handle_upload_image)
         app.router.add_post("/api/upload/cover", self._handle_upload_cover)
         app.router.add_get("/api/config", self._handle_get_config)
@@ -204,7 +206,44 @@ async function doLogin() {
         offset = int(request.query.get("offset", "0"))
         posts = await self.plugin.db.get_posts(limit=limit, offset=offset)
         total = await self.plugin.db.count_posts()
+        await self._attach_engagement(posts)
         return web.json_response({"posts": posts, "total": total})
+
+    # ------------------------------------------------------------------
+    # 点赞 / 表情：批量挂到动态上，前端一次拉取就能画完
+    # ------------------------------------------------------------------
+
+    def _like_payload(self, rows: list[dict]) -> dict:
+        """把点赞行整理成前端要的样子：总数、我赞没赞、其他人的名字。"""
+        ai_name = self.plugin.config.get("ai_name", "") or "他"
+        names: list[str] = []
+        liked_by_me = False
+        for row in rows:
+            author = row.get("author", "")
+            if author == "user":
+                liked_by_me = True
+            elif author == "npc":
+                names.append(row.get("author_name") or "朋友")
+            elif author == "ai":
+                names.append(ai_name)
+        return {"count": len(rows), "liked_by_me": liked_by_me, "names": names}
+
+    async def _attach_engagement(self, posts: list[dict]) -> None:
+        """给一批动态补上 likes / reactions 字段（在函数内就地修改）。"""
+        if not posts:
+            return
+        post_ids = [p["id"] for p in posts if p.get("id") is not None]
+        if not post_ids:
+            return
+        try:
+            likes_map = await self.plugin.db.get_likes_for_posts(post_ids)
+            reactions_map = await self.plugin.db.get_reactions_for_posts(post_ids)
+        except Exception:
+            logger.exception("[moment] 读取点赞/表情失败")
+            return
+        for post in posts:
+            post["likes"] = self._like_payload(likes_map.get(post["id"], []))
+            post["reactions"] = reactions_map.get(post["id"], [])
 
     async def _handle_get_post_detail(self, request: web.Request) -> web.Response:
         post_id = request.query.get("id")
@@ -214,6 +253,7 @@ async function doLogin() {
         if not post:
             return web.json_response({"error": "帖子不存在"}, status=404)
         comments = await self.plugin.db.get_comments(int(post_id))
+        await self._attach_engagement([post])
         return web.json_response({"post": post, "comments": comments})
 
     async def _handle_create_post(self, request: web.Request) -> web.Response:
@@ -229,6 +269,10 @@ async function doLogin() {
 
         # 触发 AI 评论（延迟执行）
         self.plugin._trigger_ai_comment(post["id"], content)
+        # 他发的动态和你的动态一样，都会有 NPC 来评论
+        self.plugin._trigger_npc_comments(post["id"])
+        # 点赞是另一条独立的线：他可能赞你，NPC 也可能赞
+        self.plugin._trigger_likes(post["id"], "user")
 
         return web.json_response({"post": post})
 
@@ -270,7 +314,50 @@ async function doLogin() {
         if post:
             self.plugin._trigger_ai_reply(post_id, post["content"], comment, parent_id)
 
+        # 你在评论区说话，NPC 可能来接一句
+        self.plugin._trigger_npc_reply(post_id, comment)
+
         return web.json_response({"comment": comment})
+
+    async def _handle_delete_comment(self, request: web.Request) -> web.Response:
+        """删除自己的评论（只有 author='user' 的能删，删掉后子回复一并消失）。"""
+        data = await request.json()
+        comment_id = data.get("comment_id")
+        if not comment_id:
+            return web.json_response({"error": "缺少 comment_id"}, status=400)
+
+        comment = await self.plugin.db.get_comment(int(comment_id))
+        if not comment:
+            return web.json_response({"error": "评论不存在"}, status=404)
+        if comment.get("author") != "user":
+            return web.json_response({"error": "只能删除自己的评论"}, status=403)
+
+        ok = await self.plugin.db.delete_comment(int(comment_id))
+        return web.json_response({
+            "success": bool(ok),
+            "id": int(comment_id),
+            "post_id": comment.get("post_id"),
+        })
+
+    # ------------------------------------------------------------------
+    # API: Likes
+    # ------------------------------------------------------------------
+
+    async def _handle_toggle_like(self, request: web.Request) -> web.Response:
+        """你点赞/取消赞。返回这条动态最新的点赞状态。"""
+        data = await request.json()
+        post_id = data.get("post_id")
+        if not post_id:
+            return web.json_response({"error": "缺少 post_id"}, status=400)
+
+        try:
+            await self.plugin.db.toggle_like(int(post_id), author="user")
+            rows = await self.plugin.db.get_likes(int(post_id))
+        except Exception:
+            logger.exception("[moment] 点赞失败")
+            return web.json_response({"error": "操作失败"}, status=500)
+
+        return web.json_response({"likes": self._like_payload(rows)})
 
     # ------------------------------------------------------------------
     # API: Notifications
@@ -391,9 +478,17 @@ async function doLogin() {
 
     async def _handle_get_config(self, request: web.Request) -> web.Response:
         """返回前端需要的配置信息（名称等）。"""
+        npc_names = []
+        if getattr(self.plugin, "npc_engine", None):
+            try:
+                npc_names = self.plugin.npc_engine.names()
+            except Exception:
+                npc_names = []
         return web.json_response({
+            "npc_names": npc_names,
             "ai_name": self.plugin.config.get("ai_name", "") or "他",
             "user_name": self.plugin.config.get("user_name", "") or "我",
+            "like_enabled": bool(self.plugin.config.get("like_enabled", True)),
         })
 
     async def _handle_login(self, request: web.Request) -> web.Response:
