@@ -64,6 +64,24 @@ def parse_stranger_names(raw) -> set:
     return names
 
 
+
+def _loose_json_fields(text: str) -> dict:
+    """从不太规范的输出里抠 reply_to / content。
+
+    模型偶尔给的是中文引号、单引号、缺逗号之类的「差一点」JSON，严格解析必失败，
+    但字段本身往往还在。抠出来，总比把整段 JSON 贴到评论区强。
+    """
+    fields = {}
+    for key in ("reply_to", "content"):
+        m = re.search(
+            r'["“”\']?' + key + r'["“”\']?\s*[:：]\s*["“”\']([^"“”\']*)["“”\']',
+            text,
+        )
+        if m:
+            fields[key] = m.group(1)
+    return fields
+
+
 class NpcEngine:
     """按配置挑 NPC、生成评论内容。"""
 
@@ -279,31 +297,41 @@ class NpcEngine:
 
     @staticmethod
     def parse_output(raw: str) -> dict:
-        """解析模型返回。优先按 JSON 解析；失败时退化成「整段当评论内容」。
+        """解析模型返回的 {"reply_to": ..., "content": ...}。
 
-        模型偶尔会把 JSON 包在 ``` 里或前后带一句解释，这里都尽量捞出来，
-        捞不到也不报错——直接当纯文本用，总比这条评论丢掉好。
+        分三级：标准 JSON -> 宽松抠字段 -> 认不出来就返回空（这条不发）。
+        老版本是「解析失败就把整段原文当评论」，模型一输出不规范，评论区就会
+        挂出 {"reply_to": "…", "content": "…"} 这种东西。
+        注意：整段本来就是一句人话（不含花括号）时，仍然照旧当正文用。
         """
         text = (raw or "").strip()
         text = re.sub(r"^```(?:json)?", "", text).strip()
         text = re.sub(r"```$", "", text).strip()
+
         match = re.search(r"\{.*\}", text, flags=re.S)
         if match:
+            data = None
             try:
                 data = json.loads(match.group(0))
-                if isinstance(data, dict):
-                    return {
-                        "reply_to": str(data.get("reply_to") or "").strip(),
-                        "content": str(data.get("content") or "").strip(),
-                    }
             except Exception:
-                pass
+                data = None
+            if isinstance(data, dict):
+                return {
+                    "reply_to": str(data.get("reply_to") or "").strip(),
+                    "content": str(data.get("content") or "").strip(),
+                }
+            loose = _loose_json_fields(text)
+            if loose:
+                logger.debug(f"[moment] 模型返回的 JSON 不规范，已宽松抠出字段: {text[:60]}")
+                return {
+                    "reply_to": str(loose.get("reply_to") or "").strip(),
+                    "content": str(loose.get("content") or "").strip(),
+                }
+            logger.warning(f"[moment] 模型返回的 JSON 解析不了，这条评论不发: {text[:60]}")
+            return {"reply_to": "", "content": ""}
+
+        # 一个花括号都没有：本来就是一句人话，照旧当正文
         return {"reply_to": "", "content": text}
-
-    # ------------------------------------------------------------------
-    # 内部工具
-    # ------------------------------------------------------------------
-
     def _unfamiliar_with(self, npc: dict, target: dict) -> bool:
         """这个 NPC 跟 target 那条评论的作者是不是生疏。
 

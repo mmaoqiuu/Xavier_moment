@@ -1,5 +1,25 @@
 # 更新日志
 
+## v0.8.1
+### 修复
+* 同一条动态下，同一个人偶尔会连出两条一模一样的评论（并发竞态：两个评论任务同时到点，都在对方落库之前通过了查重，于是各写一条；内容雷同是因为喂给模型的是同一份上下文）。
+* 模型返回的 JSON 一旦没解析成功，原始 `{"reply_to": "…", "content": "…"}` 会被当成正文发到评论区（用户朋友那边看到的就是这个）。改为分级解析：标准 JSON → 宽松抠字段（中文引号、多余逗号都能救） → 认不出来就丢掉这条，不再往评论区贴乱码。
+* 重载插件后，当天几点发帖会被重新摇一遍，当天因此多发或少发动态。现在摇好的计划会存进 settings（`daily_post_schedule`），重载后沿用同一张表，跨天才重新摇。
+
+### 变更
+* 新增 `core/npc_comment_guard.py`：NPC 评论的「查重 → 生成 → 落库」按 (post_id, npc_name) 串行，后到的任务一进来，前一条已经落库，查重就能拦住它。
+* `main.py`：`_do_npc_comment` 拆成「加锁外壳 + `_do_npc_comment_impl` 正文」，逻辑本身没动。
+* 新增 `tests/test_npc_comment_race.py`：离线并发回归测试，含一个无守卫的对照组（先证明它会复现两条，再说锁住了）。
+* 新增 `tests/test_npc_output_parse.py`：解析回归测试，其中一条直接照着用户截图那个乱码场景写。
+* `core/scheduler.py`：新增 `_today_plan()`（先取存档、没有再摇）以及 `encode_schedule` / `decode_schedule` 两个纯函数；`Scheduler` 增加可选的 `load_schedule` / `save_schedule` 回调。
+* `main.py`：实现 `_load_daily_schedule` / `_save_daily_schedule` 并注入调度器。
+* 新增 `tests/test_schedule_persistence.py`：编解码与「沿用不重摇」的离线测试。
+
+### 原因
+* 用户发现「陶桃在同一条动态下评论了两条」。
+* 用户的朋友那边评论区挂出了原始 JSON，反馈后一并修掉。
+* 用户反馈「重载插件后会重新摇发帖时间」。
+
 ## v0.8.0
 ### 变更
 * 插件更名为 `astrbot_plugin_xavier_moment`，与仓库 Xavier_moment 对应：目录名、metadata.yaml 的 name/repo、main.py 的 PLUGIN_NAME 同步更新，代码内不再残留旧名。

@@ -11,17 +11,61 @@ from typing import Optional, Callable, Awaitable
 from astrbot.api import logger
 
 
+def encode_schedule(times: list[datetime], now: Optional[datetime] = None) -> str:
+    """把今日计划编成 "YYYY-MM-DD|HH:MM,HH:MM" 存进 settings。"""
+    now = now or datetime.now()
+    return now.strftime("%Y-%m-%d") + "|" + ",".join(t.strftime("%H:%M") for t in times)
+
+
+def decode_schedule(raw: str, now: Optional[datetime] = None) -> Optional[list[datetime]]:
+    """把存下来的计划解回 datetime 列表。
+
+    不是今天的（跨天了）、或者解不出任何时间点，都返回 None——调用方据此
+    重新摇一份。
+    """
+    now = now or datetime.now()
+    if not raw:
+        return None
+    date_part, _, times_part = str(raw).partition("|")
+    if date_part != now.strftime("%Y-%m-%d"):
+        return None  # 昨天（或更早）的计划，作废
+    times = []
+    for hhmm in times_part.split(","):
+        hhmm = hhmm.strip()
+        if not hhmm:
+            continue
+        try:
+            hour, minute = (int(x) for x in hhmm.split(":"))
+        except Exception:
+            continue
+        times.append(now.replace(hour=hour, minute=minute, second=0, microsecond=0))
+    return times or None
+
+
 class Scheduler:
     """简单的异步定时调度器，不依赖 apscheduler 以减少兼容性问题。"""
 
-    def __init__(self, config: dict, on_trigger: Callable[[], Awaitable[None]]):
+    def __init__(
+        self,
+        config: dict,
+        on_trigger: Callable[[], Awaitable[None]],
+        load_schedule=None,
+        save_schedule=None,
+    ):
         """
         Args:
             config: 插件配置字典
             on_trigger: 触发时调用的异步回调（执行发帖逻辑）
+            load_schedule: 可选，异步读回「今天已摇好的时间点」，没有则返回 None
+            save_schedule: 可选，异步把「今天摇好的时间点」存下来
+
+        有了存/取这两个口子，插件重载后才会沿用今天已经摇好的计划，而不是
+        重新摇一遍——重摇会让当天多发或少发动态。
         """
         self.config = config
         self.on_trigger = on_trigger
+        self.load_schedule = load_schedule
+        self.save_schedule = save_schedule
         self._task: Optional[asyncio.Task] = None
         self._today_schedule: list[datetime] = []
         self._running = False
@@ -50,8 +94,8 @@ class Scheduler:
         """主循环：每天计算当日的发帖时间点，然后等待执行。"""
         while self._running:
             try:
-                # 计算今天的发帖计划
-                self._today_schedule = self._plan_today()
+                # 计算今天的发帖计划（有存档就沿用，重载不重摇）
+                self._today_schedule = await self._today_plan()
                 if self._today_schedule:
                     times_str = [t.strftime("%H:%M") for t in self._today_schedule]
                     logger.info(f"[moment] 今日发帖计划: {times_str}")
@@ -92,6 +136,33 @@ class Scheduler:
             except Exception as e:
                 logger.error(f"[moment] 调度器循环异常: {e}")
                 await asyncio.sleep(300)  # 出错等 5 分钟再试
+
+    async def _today_plan(self) -> list[datetime]:
+        """今天要发帖的时间点。
+
+        有存档就沿用（插件重载、AstrBot 重启都算同一天），没有才现摇并落库。
+        不这么做的话，每次重载都会重新摇一遍，当天可能被塞进多余的动态。
+        """
+        if self.load_schedule is not None:
+            saved = None
+            try:
+                saved = await self.load_schedule()
+            except Exception:
+                logger.exception("[moment] 读取今日发帖计划失败，改为重新规划")
+                saved = None
+            if saved:
+                logger.info(
+                    "[moment] 沿用今天已摇好的发帖计划："
+                    f"{[t.strftime('%H:%M') for t in saved]}"
+                )
+                return saved
+        plan = self._plan_today()
+        if self.save_schedule is not None:
+            try:
+                await self.save_schedule(plan)
+            except Exception:
+                logger.exception("[moment] 保存今日发帖计划失败")
+        return plan
 
     def _plan_today(self) -> list[datetime]:
         """根据配置规划今天的发帖时间点。"""

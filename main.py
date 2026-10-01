@@ -22,9 +22,10 @@ from .storage.db import MomentDatabase
 from .core.chat_bridge import ChatBridge
 from .core.like_engine import LikeEngine
 from .core.material import MaterialCollector
+from .core.npc_comment_guard import NpcCommentGuard
 from .core.npc_engine import NpcEngine
 from .core.post_engine import PostEngine
-from .core.scheduler import Scheduler
+from .core.scheduler import Scheduler, decode_schedule, encode_schedule
 from .core.standalone_server import MomentServer
 
 PLUGIN_NAME = "astrbot_plugin_xavier_moment"
@@ -114,7 +115,12 @@ class MomentPlugin(Star):
 
             # 调度器
             if self.config.get("ai_post_enabled", True):
-                self.scheduler = Scheduler(self.config, self._do_ai_post)
+                self.scheduler = Scheduler(
+            self.config,
+            self._do_ai_post,
+            load_schedule=self._load_daily_schedule,
+            save_schedule=self._save_daily_schedule,
+        )
                 await self.scheduler.start()
 
             # 启动 HTTP 服务
@@ -843,7 +849,24 @@ class MomentPlugin(Star):
             logger.exception("[moment] 安排 NPC 评论失败")
 
     async def _do_npc_comment(self, post_id: int, npc_name: str, allow_repeat: bool = False):
-        """某个 NPC 对某条动态发表一条评论。"""
+        """某个 NPC 对某条动态发表一条评论。
+
+        进来先拿锁（按「动态 + NPC」，见 core/npc_comment_guard.py），
+        再交给 _do_npc_comment_impl 干活。
+        查重和落库之间夹着一整段模型调用（好几秒），两个任务同时到点时，
+        双方都会在对方写入前通过查重，于是同一个人连出两条一模一样的话。
+        锁上以后后到的那条一进来，前一条已经写进库了，查重自然拦得住。
+        """
+        if not self.db or not self.npc_engine:
+            return
+        guard = getattr(self, "_npc_comment_guard", None)
+        if guard is None:
+            guard = self._npc_comment_guard = NpcCommentGuard()
+        async with guard.lock_for(post_id, npc_name):
+            await self._do_npc_comment_impl(post_id, npc_name, allow_repeat)
+
+    async def _do_npc_comment_impl(self, post_id: int, npc_name: str, allow_repeat: bool = False):
+        """发表评论的实际逻辑（调用方已按 post_id + npc_name 加锁）。"""
         if not self.db or not self.npc_engine:
             return
         try:
@@ -971,6 +994,29 @@ class MomentPlugin(Star):
     # ------------------------------------------------------------------
     # AI 发帖 / 评论核心逻辑
     # ------------------------------------------------------------------
+    async def _load_daily_schedule(self):
+        """取今天已经摇好的发帖计划；没有、或不是今天的，返回 None。
+
+        重载插件不该重新摇时间点，否则当天会被多塞一条动态。
+        """
+        if not self.db:
+            return None
+        try:
+            raw = await self.db.get_setting("daily_post_schedule", "")
+        except Exception:
+            logger.exception("[moment] 读取今日发帖计划失败")
+            return None
+        return decode_schedule(raw)
+
+    async def _save_daily_schedule(self, times):
+        """把今天摇好的发帖计划存起来，重载后接着用。"""
+        if not self.db:
+            return
+        try:
+            await self.db.set_setting("daily_post_schedule", encode_schedule(times))
+        except Exception:
+            logger.exception("[moment] 保存今日发帖计划失败")
+
 
     async def _do_ai_post(self):
         """执行一次 AI 发帖。"""
