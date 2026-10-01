@@ -213,6 +213,30 @@
     "hint": "自定义他发帖时的风格引导。留空使用内置默认值（基于角色人设自然发挥）。你可以在这里详细描述他应该以什么口吻、什么风格来发帖，比如：「发帖要简短，1~3句话，偶尔用 emoji，像个 20 岁大学生发微博」。这段内容会作为 LLM 提示词的一部分。",
     "default": ""
   },
+  "image_generate_enabled": {
+    "description": "动态配图（借「小回相机」）",
+    "type": "bool",
+    "hint": "开启后，他发动态时会按概率请「小回相机」拍一张图一起发。需要先装好并启用「小回相机」，且它那边配了可用的生图模型。任何一步失败都会自动跳过、只发纯文字，不会报错，也不会影响发帖。",
+    "default": false
+  },
+  "image_generate_probability": {
+    "description": "动态配图概率",
+    "type": "float",
+    "hint": "每条动态带图的概率，0~1。真人也不是条条带图，0.3~0.5 比较自然。默认 0.4，大约五条里两条带图。",
+    "default": 0.4
+  },
+  "image_generate_style_hint": {
+    "description": "配图额外风格提示",
+    "type": "string",
+    "hint": "可选。追加在拍摄指令后面，用来收一下画面风格，比如「偏冷色调」「室内暖光」。留空则完全用「小回相机」自己的风格设定，推荐留空。",
+    "default": ""
+  },
+  "image_generate_timeout": {
+    "description": "配图超时（秒）",
+    "type": "int",
+    "hint": "等「小回相机」出图的最长时间，超时就放弃配图、只发文字。会自动限制在 90 秒内。「小回相机」内部已限制在 85 秒，一般不用改。",
+    "default": 90
+  },
   "advanced_mode": {
     "description": "⚙️ 启用高级配置",
     "type": "bool",

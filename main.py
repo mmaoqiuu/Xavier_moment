@@ -27,6 +27,7 @@ from .core.npc_engine import NpcEngine
 from .core.post_engine import PostEngine
 from .core.scheduler import Scheduler, decode_schedule, encode_schedule
 from .core.standalone_server import MomentServer
+from .core.image_bridge import ImageBridge
 
 PLUGIN_NAME = "astrbot_plugin_xavier_moment"
 
@@ -60,6 +61,7 @@ class MomentPlugin(Star):
         self.npc_engine: NpcEngine | None = None
         self.like_engine: LikeEngine | None = None
         self.chat_bridge: ChatBridge | None = None
+        self.image_bridge: ImageBridge | None = None
 
         # 延迟任务池：本次运行里挂起的 asyncio 定时器，插件卸载时统一取消。
         # 取消只影响「本次运行还跑不跑得到」，事情本身已经落进 jobs 表，
@@ -83,6 +85,15 @@ class MomentPlugin(Star):
 
             # 发帖引擎
             self.post_engine = PostEngine(self.context, self.config)
+
+            # 配图桥：发帖时借「小回相机」拍一张。
+            # 它没装 / 没开 / 版本不对，都只会在内部安静跳过，不影响发帖。
+            self.image_bridge = ImageBridge(
+                self.context,
+                self.config,
+                self.data_dir,
+                llm_caller=self.post_engine._call_llm,
+            )
 
             # NPC 评论引擎
             self.npc_engine = NpcEngine(
@@ -1034,16 +1045,25 @@ class MomentPlugin(Star):
             logger.warning("[moment] AI 发帖生成失败，本次跳过")
             return
 
-        # 3. 存入数据库
+        # 3. 配图（可选）：请「小回相机」拍一张。
+        #    没装 / 没开 / 超时 / 出图失败，都只返回空字符串，不影响下面发帖。
+        images = ""
+        if self.image_bridge:
+            images = await self.image_bridge.try_generate_for_post(
+                result["content"], result.get("mood", "")
+            )
+
+        # 4. 存入数据库
         post = await self.db.create_post(
             author="ai",
             content=result["content"],
             mood=result.get("mood", ""),
             source_hint="auto_scheduled",
+            images=images,
         )
         logger.info(f"[moment] AI 发布了新动态 #{post['id']}: {result['content'][:30]}...")
 
-        # 4. 推送通知
+        # 5. 推送通知
         if self.config.get("notify_on_ai_post", True):
             await self._send_notification(
                 f"📢 您关注的用户发布了一条新动态：\n\n「{result['content'][:100]}」",
@@ -1051,7 +1071,7 @@ class MomentPlugin(Star):
                 ntype="new_post",
             )
 
-        # 5. 他发的动态同样会有人来评论，也会有人点赞
+        # 6. 他发的动态同样会有人来评论，也会有人点赞
         self._trigger_npc_comments(post["id"])
         await self._trigger_likes(post["id"], "ai")
 
