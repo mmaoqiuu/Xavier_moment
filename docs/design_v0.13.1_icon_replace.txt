@@ -1,0 +1,45 @@
+Moment v0.13.1 实现说明 —— 主屏幕图标素材替换与破缓存
+=========================================================
+
+一、问题
+  用户「添加到主屏幕」后看到的主屏幕图标不是自己提供的那张插画。
+  排查结果：
+  1. assets 内素材为上一版（v0.13.0）素材，非用户新给的图；
+  2. iOS 对 apple-touch-icon 与 manifest icons 有长期缓存，
+     即使文件替换，Safari 仍可能沿用旧图直接建桌面图标；
+  3. 服务端 _serve_asset() 未设置 Cache-Control，响应走默认缓存策略。
+
+二、改动
+  1. 素材重新生成
+     - 源图：用户提供的 180x180 JPEG（月牙上的白兔与捕星网）。
+     - 处理：先中心裁成正方形（源图已是 1:1，裁切不丢内容），
+       再用 LANCZOS 缩放，避免放大后锯齿。
+     - 产出（全部位于 pages/timeline/assets/）：
+         icon-180.png / icon-192.png / icon-512.png
+         favicon-32.png / favicon.png / favicon.ico（16/32/48/64 多尺寸）
+         apple-touch-icon.png / apple-touch-icon-precomposed.png
+       PNG 均为不透明 RGB，避免 iOS 合成圆角时露黑边。
+  2. 破缓存
+     - 直接换文件名：index.html 与登录页内联 HTML 的 icon / apple-touch-icon
+       改指 icon-180-v2.png、icon-192-v2.png、favicon-32-v2.png，
+       根路径 /apple-touch-icon.png 的路由也改指 icon-180-v2.png；
+     - manifest.webmanifest 内三处 icons.src 同步改为 v2 文件名；
+     - 实测仅加 ?v=2 查询串仍会被 iOS 复用旧缓存，故改为换名；
+     - _serve_asset() 增加 Cache-Control: no-cache, max-age=0, must-revalidate。
+  3. 目录归置
+     - 根目录别名文件（apple-touch-icon*.png、favicon.*）删除，
+       根路径继续由 standalone_server.py 的路由指向 assets 内文件，
+       保持 v0.13.0「素材统一收进 assets」的结论。
+
+三、兼容与影响
+  - 文件名全部写死，不接受外部传入，无路径穿越风险；
+  - 图标不参与密码校验（中间件只拦 / 与 /api），登录页图标仍可正常显示；
+  - 素材为运行时按请求读取，替换文件后无需重启插件即生效。
+
+四、用户侧生效步骤
+  1. 长按桌面旧图标 -> 删除；
+  2. Safari 打开站点 -> 分享 -> 添加到主屏幕；
+  3. 若仍为旧图，先在 设置 > Safari > 高级 > 网站数据 中删除该 IP 站点数据再重加。
+
+五、版本
+  修复，patch：v0.13.0 -> v0.13.1（metadata.yaml 与 CHANGELOG.md 已同步）。

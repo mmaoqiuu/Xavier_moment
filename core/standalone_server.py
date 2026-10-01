@@ -80,6 +80,18 @@ class MomentServer:
         app.router.add_post("/api/settings/update", self._handle_update_settings)
         app.router.add_get("/images/{filename}", self._handle_serve_image)
 
+        # 图标等静态资源。仅供页面引用，不含用户数据，因此不受密码中间件拦截。
+        assets_dir = self._pages_dir / "assets"
+        if assets_dir.is_dir():
+            app.router.add_static("/static/", assets_dir, name="static")
+        # 浏览器与 iOS 会在根路径直接请求下面这些固定名字，做一层别名指向 assets。
+        # apple-touch-icon-precomposed.png 是 iOS 6 及更早的旧名字，仍会被请求。
+        app.router.add_get("/favicon.ico", self._handle_favicon)
+        app.router.add_get("/favicon.png", self._handle_favicon)
+        app.router.add_get("/apple-touch-icon.png", self._handle_apple_touch_icon)
+        app.router.add_get("/apple-touch-icon-precomposed.png", self._handle_apple_touch_icon)
+        app.router.add_get("/manifest.webmanifest", self._handle_manifest)
+
         # OPTIONS 预检请求（CORS）
         app.router.add_route("OPTIONS", "/{path_info:.*}", self._handle_options)
 
@@ -153,6 +165,9 @@ class MomentServer:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Moment - 登录</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32-v2.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/icon-180-v2.png">
+<meta name="theme-color" content="#1d3f66">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, system-ui, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); height: 100vh; display: flex; align-items: center; justify-content: center; }
@@ -212,6 +227,29 @@ async function doLogin() {
         html = html_path.read_text(encoding="utf-8")
         resp = web.Response(text=html, content_type="text/html")
         resp.headers.update(self._cors_headers())
+        return resp
+
+    async def _handle_apple_touch_icon(self, request: web.Request) -> web.Response:
+        """返回 iOS 主屏幕图标。用 180x180 那份，是 iOS 的推荐尺寸。"""
+        return self._serve_asset("icon-180-v2.png", "image/png")
+
+    async def _handle_favicon(self, request: web.Request) -> web.Response:
+        """返回 favicon.ico。名字由调用方写死，不接受外部传入。"""
+        return self._serve_asset("favicon.ico", "image/vnd.microsoft.icon")
+
+    async def _handle_manifest(self, request: web.Request) -> web.Response:
+        """返回 Web App Manifest，供「添加到主屏幕」使用。"""
+        return self._serve_asset("manifest.webmanifest", "application/manifest+json")
+
+    def _serve_asset(self, filename: str, content_type: str) -> web.Response:
+        """读取 assets 下的固定文件。文件名由调用方写死，无需做穿越校验。"""
+        path = self._pages_dir / "assets" / filename
+        if not path.is_file():
+            return web.Response(text="资源缺失", status=404)
+        resp = web.Response(body=path.read_bytes(), content_type=content_type)
+        resp.headers.update(self._cors_headers())
+        # 图标会被 iOS 与浏览器长期缓存，换素材后必须让它重新拉取。
+        resp.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
         return resp
 
     # ------------------------------------------------------------------

@@ -1,5 +1,41 @@
 # 更新日志
 
+## v0.13.1
+### 修复（主屏幕图标换成用户指定的那张，并破缓存）
+* 替换 `pages/timeline/assets/` 下全套图标素材：源图为用户提供的 180×180 手绘插画（月牙上的白兔与捕星网），中心裁方后以 LANCZOS 生成 `icon-180/192/512.png`、`favicon-32.png`、`favicon.ico`（16/32/48/64 多尺寸）、`apple-touch-icon(-precomposed).png`。
+* `pages/timeline/index.html` 与 `core/standalone_server.py` 登录页的图标链接改为新文件名（`icon-180-v2.png`、`icon-192-v2.png`、`favicon-32-v2.png`），`manifest.webmanifest` 内三处 `icons.src` 同步改为 `icon-192-v2.png` / `icon-512-v2.png`。
+* `core/standalone_server.py` 的 `_serve_asset()` 补 `Cache-Control: no-cache, max-age=0, must-revalidate`：此前 iOS 会把 `apple-touch-icon` 长期缓存，换图后不生效。
+
+### 原因
+* 用户反馈「添加到主屏幕」后图标不是自己给的那张插画；原图标为上一版素材，且被 `apple-touch-icon` 长期缓存锁住，仅换文件不足以刷新。
+
+### 版本
+* 修复，patch：v0.13.0 -> v0.13.1。
+
+## v0.13.0
+### 新增（网页图标与「添加到主屏幕」）
+* 新增 `pages/timeline/assets/`，放图标与 Web App Manifest：`icon-512.png`、`icon-192.png`、`icon-180.png`、`favicon-32.png`、`favicon.ico`、`manifest.webmanifest`，合计 244KB。
+* `pages/timeline/index.html` 头部补齐 `icon`、`apple-touch-icon`、`manifest` 与 `apple-mobile-web-app-*` 系列 meta，手机可「添加到主屏幕」并独立窗口运行。
+* 服务端新增 `/static/{filename}` 静态目录、`/favicon.ico`、`/manifest.webmanifest` 三个入口。
+
+### 变更
+* `core/standalone_server.py`：注册 `add_static("/static/", pages/timeline/assets)`；新增 `_handle_favicon`、`_handle_manifest` 与共用的 `_serve_asset()`；登录页内联 HTML 同步补上图标与 theme-color。
+* `metadata.yaml`：版本升至 v0.13.0。
+* 清理 `pages/timeline/` 根目录下三个此前手工放入、但未被页面引用的图标文件（`apple-touch-icon.png`、`favicon.png`、`favicon.ico`），连同它们对应的四个根路径路由一并移除，统一收进 `assets/` 与共用的别名实现；`apple-touch-icon-precomposed.png` 这一旧名字兼容路径予以保留。
+* `docs/design_v0.13.0_icon.txt`：记录本次方案与取舍。
+
+### 设计取舍
+* **图标归为静态资源，不进 data 目录**：图标是随代码走的固定素材，不是运行时数据，放进插件目录才能在更新插件时一并替换。
+* **图标不参与密码校验**：中间件只拦 `/` 与 `/api`，图标路径天然在拦截范围外。登录页自身也要显示图标，若把图标也锁上，登录页就会破图。
+* **`/favicon.ico` 与 manifest 单独写 handler，不用 add_static 兜住**：浏览器会在任何页面自动请求根路径的 `/favicon.ico`，写死文件名最省事，也避免为了一个文件把静态目录挂到根路径。
+* **不裁图**：源图主体已铺满画布（自动检测非背景区域占 3%~94%），裁切只会切掉内容。
+* **PNG 压到 256 色调色板**：插画类图像减色后肉眼几乎无差，512 那张从 339KB 降到 172KB，页面与「添加到主屏幕」的首次加载都受益。
+* **不生成 1024 图标**：未配置启动画面，1024 只是多占 1MB 仓库体积，删除。
+* **不引入 Service Worker**：本次目标只是图标与桌面入口，离线缓存是另一件事，不做无谓的复杂度扩张。
+
+### 原因
+* 用户提供一张手绘插画，希望作为朋友圈网页图标，并在手机上添加到桌面使用。
+
 ## v0.12.0
 ### 新增（图片压缩收口到一处）
 * 抽出 `core/image_utils.py`：`shrink_to_jpeg()` 成为全插件唯一的压缩实现，三个入口共用。
