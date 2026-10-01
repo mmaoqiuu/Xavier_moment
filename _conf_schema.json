@@ -301,6 +301,16 @@
       "advanced_mode": true
     }
   },
+  "persona_id": {
+    "description": "发帖使用的人格",
+    "type": "string",
+    "hint": "留空或选「默认人格」时，自动跟随 AstrBot 当前启用的人格（推荐）。也可以指定一个固定人格，让朋友圈始终用他来发帖。",
+    "_special": "select_persona",
+    "default": "",
+    "condition": {
+      "advanced_mode": true
+    }
+  },
   "post_with_emoji": {
     "description": "帖子允许 emoji",
     "type": "bool",

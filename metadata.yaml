@@ -2,6 +2,6 @@ name: astrbot_plugin_xavier_moment
 display_name: Moment
 desc: 让他和你都能发布动态、互相评论，分享日常生活；支持 NPC 评论、评论回复与朋友圈近况注入聊天。
 short_desc: 他与你的私密朋友圈（含 NPC 评论）
-version: v0.8.1
+version: v0.9.0
 author: 源源
 repo: https://github.com/mmaoqiuu/Xavier_moment

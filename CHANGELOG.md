@@ -1,5 +1,29 @@
 # 更新日志
 
+## v0.9.0
+### 修复（发帖人设可能取错）
+* 人设解析的三步逻辑实际上全部失效，一直靠巧合才取到正确人设：
+  - 第一步读 `data/config.json` 找 persona_id —— 该文件在新版 AstrBot 中已不存在（配置已迁入数据库），persona_id 恒为空；
+  - 第二步的列名探测顺序把自增主键 `id` 排在 `persona_id` 前面，于是拿 `WHERE id='sxh'` 去查，永远查不到；
+  - 第三步兜底 `SELECT … LIMIT 1` 直接取第一条，恰好第一条是「沈星回」才没暴露问题。
+* 后果：一旦新增、删除或重排人设，插件会静默取到无关人设（例如「Python 开发 Agent」那条），表现为角色突然换了个口吻发帖，而且不报错、不告警。
+
+### 变更
+* `core/material.py` 重写人设解析，改为三级回落：
+  1. 配置指定的人格 → `persona_manager.get_persona_v3_by_id()`（精确匹配）
+  2. AstrBot 当前默认人格 → `persona_manager.get_default_persona_v3()`
+  3. 数据库兜底 → 匹配列修正为 `persona_id`，去掉 `LIMIT 1` 的盲取，查不到就返回空并告警
+* 三级全部失败时返回空字符串并告警，行为等同未开启人设注入，不会中断发帖流程。
+* 新增人设缓存（60 秒 TTL）与 `invalidate_persona_cache()`：此前每发一条帖子/评论都要读文件、扫目录、开数据库。
+* 数据库兜底的同步 sqlite 操作改到线程池执行（`asyncio.to_thread`），不再阻塞事件循环。
+* `_conf_schema.json` 新增「发帖使用的人格」配置项（`persona_id`），使用 AstrBot 的人格选择器（`_special: select_persona`）：留空或选「默认人格」即自动跟随当前启用的人格。
+* 修复「发帖时读取人设 prompt」开关（`use_persona_for_post`）此前形同虚设：它只写在配置里，代码从未读取，关掉后人设照样被注入。现在关闭即完全不读取人设。
+* 新增 `tests/test_persona_resolve.py`：覆盖三级回落、『default』处理、列名修正、盲取保护与缓存行为。
+* 调用方（`post_engine.py` / `npc_engine.py` / `main.py`）无需改动，`get_persona()` 签名保持不变。
+
+### 原因
+* 用户希望发帖时能稳定用到正确的人设，并希望能像其他插件那样在面板里直接选择人格。
+
 ## v0.8.1
 ### 修复
 * 同一条动态下，同一个人偶尔会连出两条一模一样的评论（并发竞态：两个评论任务同时到点，都在对方落库之前通过了查重，于是各写一条；内容雷同是因为喂给模型的是同一份上下文）。
