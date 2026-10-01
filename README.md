@@ -47,9 +47,16 @@
 欢迎提交 Issue 和 Pull Request，一起让这个小空间变得更温暖！
 
 ## 👩🏻‍💻 作者
-源源
 
+- **原作**：[源源](https://github.com/AtomBombBaby-OVO)
+- **改版维护**：[mmaoqiuu](https://github.com/mmaoqiuu)
 
+## 🙏 致谢
+
+本插件基于 [源源](https://github.com/AtomBombBaby-OVO) 的
+[astrbot_plugin_moment](https://github.com/AtomBombBaby-OVO/astrbot_plugin_moment) 开发。
+
+「专属朋友圈」这个构想、网页端的整体风格和最初的架构都出自她；后来的 NPC 评论体系、聊天上下文桥接、定时发帖这些，是在原作基础上的扩展。谢谢她愿意把这个小空间分享出来。
 ## v0.2.0 新增
 
 - **NPC 评论**：你和他的动态下面都会有别的角色来评论，像真实的朋友圈。
