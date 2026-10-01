@@ -13,6 +13,7 @@
 * 新增 `tests/test_npc_output_parse.py`：解析回归测试，其中一条直接照着用户截图那个乱码场景写。
 * `core/scheduler.py`：新增 `_today_plan()`（先取存档、没有再摇）以及 `encode_schedule` / `decode_schedule` 两个纯函数；`Scheduler` 增加可选的 `load_schedule` / `save_schedule` 回调。
 * `main.py`：实现 `_load_daily_schedule` / `_save_daily_schedule` 并注入调度器。
+* 插件目录名统一为 `astrbot_plugin_xavier_moment`：v0.8.0 只改了 metadata 里的 name、漏了目录名，两者一直对不上（AstrBot 按目录定位代码、按 metadata.name 认插件，容易出「数据/配置找不到」的怪事）。配置与数据目录不受影响，仍按 `PLUGIN_NAME` 走。
 * 新增 `tests/test_schedule_persistence.py`：编解码与「沿用不重摇」的离线测试。
 
 ### 原因
