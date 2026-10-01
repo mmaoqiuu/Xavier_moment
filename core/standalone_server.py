@@ -18,6 +18,17 @@ import aiohttp
 from aiohttp import web
 from astrbot.api import logger
 
+from .image_utils import shrink_to_jpeg
+
+
+# 超过这个体积的上传图才会被重新压缩。
+# 前端已经压到一两百 KB，正常发图不会触发；只有绕过前端、
+# 或前端那条 canvas 路径失败时（HEIC 等）才会走到这里。
+COMPRESS_MIN_BYTES = 300 * 1024
+
+# 动图不能转 JPEG，原样保存
+NON_COMPRESSIBLE_EXTS = {"gif"}
+
 
 class MomentServer:
     """自托管 aiohttp 服务器，提供朋友圈页面和 API。"""
@@ -439,11 +450,55 @@ async function doLogin() {
 
         try:
             img_bytes = base64.b64decode(image_data)
-            filepath.write_bytes(img_bytes)
         except Exception as e:
             return web.json_response({"error": f"图片保存失败: {e}"}, status=500)
 
+        # 前端一般已经压过一道，这里只兜底：万一压缩失败（HEIC 之类解不开）
+        # 或有人绕过前端直接打接口，也不该让几 MB 的原图落盘。
+        # 小图直接原样存，避免无谓的重编码损失。
+        filename, filepath = await self._maybe_compress(
+            img_bytes, images_dir, filename, filepath, ext
+        )
+
         return web.json_response({"filename": filename, "url": f"/images/{filename}"})
+
+    async def _maybe_compress(
+        self,
+        img_bytes: bytes,
+        images_dir: Path,
+        filename: str,
+        filepath: Path,
+        ext: str,
+    ) -> tuple:
+        """体积超标才压缩，返回最终的 (filename, filepath)。
+
+        压缩成功时扩展名会变成 jpg，文件名同步改掉，确保落盘内容与后缀一致
+        （浏览器按后缀猜 Content-Type，后缀骗人会导致图片打不开）。
+        """
+        if len(img_bytes) <= COMPRESS_MIN_BYTES or ext in NON_COMPRESSIBLE_EXTS:
+            filepath.write_bytes(img_bytes)
+            return filename, filepath
+
+        try:
+            data = await asyncio.to_thread(
+                shrink_to_jpeg, img_bytes, None, None, None, COMPRESS_MIN_BYTES
+            )
+        except Exception:
+            logger.exception("[moment] 上传图片压缩异常，按原图保存")
+            data = None
+
+        if data:
+            stem = Path(filename).stem
+            filename = f"{stem}.jpg"
+            filepath = images_dir / filename
+            filepath.write_bytes(data)
+            logger.info(
+                f"[moment] 上传图片已压缩 {len(img_bytes) / 1024:.0f}KB -> {len(data) / 1024:.0f}KB"
+            )
+            return filename, filepath
+
+        filepath.write_bytes(img_bytes)
+        return filename, filepath
 
     async def _handle_upload_cover(self, request: web.Request) -> web.Response:
         """处理封面图片上传（multipart/form-data）。"""
@@ -475,6 +530,25 @@ async function doLogin() {
                     filepath.unlink(missing_ok=True)
                     return web.json_response({"error": "文件太大，最大 10MB"}, status=400)
                 f.write(chunk)
+
+        # 封面每个用户每次进页面都要加载，之前这里完全没压，10MB 的原图也照存。
+        # 体积超标就压成 JPEG；压不动（解不开的格式）保留原文件，不影响使用。
+        if size > COMPRESS_MIN_BYTES and ext not in NON_COMPRESSIBLE_EXTS:
+            try:
+                data = await asyncio.to_thread(
+                    shrink_to_jpeg, filepath, None, None, None, COMPRESS_MIN_BYTES
+                )
+            except Exception:
+                logger.exception("[moment] 封面压缩异常，保留原图")
+                data = None
+
+            if data:
+                filepath.unlink(missing_ok=True)
+                filename = f"{Path(filename).stem}.jpg"
+                filepath.parent.joinpath(filename).write_bytes(data)
+                logger.info(
+                    f"[moment] 封面上传已压缩 {size / 1024:.0f}KB -> {len(data) / 1024:.0f}KB"
+                )
 
         return web.json_response({"url": f"/images/{filename}"})
 

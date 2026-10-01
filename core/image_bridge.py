@@ -25,6 +25,14 @@ from typing import Optional
 
 from astrbot.api import logger
 
+from .image_utils import (
+    DEFAULT_MAX_SIDE,
+    DEFAULT_QUALITY,
+    clamp_max_side,
+    clamp_quality,
+    shrink_to_jpeg,
+)
+
 
 # 小回相机的插件名（AstrBot 里注册的名字，不是显示名）
 CAMERA_PLUGIN_NAME = "astrbot_plugin_xiao_hui_camera"
@@ -34,6 +42,11 @@ ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 # 出图超时的硬上限：小回相机自己限制在 85 秒内，这里再兜一层
 MAX_TIMEOUT = 90
+
+# 图片压缩默认值（可在配置里改）
+DEFAULT_MAX_SIDE = 1280   # 长边像素上限
+DEFAULT_QUALITY = 85      # JPEG 质量
+MIN_MAX_SIDE = 480
 
 SHOT_SYSTEM_PROMPT = (
     "你是摄影指导，负责把一段生活化的文字转成一句可执行的拍摄指令。"
@@ -134,6 +147,15 @@ class ImageBridge:
         except (TypeError, ValueError):
             value = MAX_TIMEOUT
         return float(max(5, min(MAX_TIMEOUT, value)))
+
+    def _compress_enabled(self) -> bool:
+        return bool(self.config.get("image_compress_enabled", True))
+
+    def _max_side(self) -> int:
+        return clamp_max_side(self.config.get("image_max_side", DEFAULT_MAX_SIDE))
+
+    def _quality(self) -> int:
+        return clamp_quality(self.config.get("image_jpeg_quality", DEFAULT_QUALITY))
 
     # ------------------------------------------------------------------
     # 找小回相机
@@ -270,12 +292,40 @@ class ImageBridge:
     # ------------------------------------------------------------------
 
     async def _store_image(self, src: Path) -> str:
-        """把生成的图拷进朋友圈的 images 目录，返回文件名。"""
+        """把生成的图落进朋友圈的 images 目录，返回文件名。
+
+        默认先压缩成 JPEG 再落盘（原图动辄 2MB，前端一次拉几十条会卡）。
+        压缩失败或遇到动图时自动回退为原图直拷，绝不因此漏发配图。
+        """
+        today = datetime.now().strftime("%Y%m%d")
+        uid = uuid.uuid4().hex[:8]
+
+        if self._compress_enabled():
+            filename = f"ai_{today}_{uid}.jpg"
+            dst = self.images_dir / filename
+            try:
+                data = await asyncio.to_thread(
+                    shrink_to_jpeg,
+                    src,
+                    dst,
+                    self._max_side(),
+                    self._quality(),
+                )
+                if data:
+                    logger.info(
+                        f"[moment] 动态配图已就绪（已压缩 {len(data) / 1024:.0f}KB）: {filename}"
+                    )
+                    return filename
+                logger.info("[moment] 图片是动图或不适合压缩，按原图保存")
+            except Exception:
+                logger.exception("[moment] 图片压缩失败，回退为原图直拷")
+            # 回退前清掉可能写了一半的残缺文件
+            self._safe_unlink(dst)
+
         ext = src.suffix.lower() if src.suffix else ".png"
         if ext not in ALLOWED_EXTS:
             ext = ".png"
-
-        filename = f"ai_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}{ext}"
+        filename = f"ai_{today}_{uid}{ext}"
         dst = self.images_dir / filename
 
         try:
@@ -287,3 +337,11 @@ class ImageBridge:
 
         logger.info(f"[moment] 动态配图已就绪: {filename}")
         return filename
+
+    @staticmethod
+    def _safe_unlink(path: Path) -> None:
+        """尽力删除半成品文件，失败不影响主流程。"""
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            logger.debug(f"[moment] 清理临时图片失败: {path}")

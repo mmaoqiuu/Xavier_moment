@@ -237,6 +237,30 @@
     "hint": "等「小回相机」出图的最长时间，超时就放弃配图、只发文字。会自动限制在 90 秒内。「小回相机」内部已限制在 85 秒，一般不用改。",
     "default": 90
   },
+  "image_compress_enabled": {
+    "description": "压缩配图后再保存",
+    "type": "bool",
+    "hint": "开启后，生成的配图会先缩放并转成 JPEG 再存入朋友圈，单张从 2MB 左右降到 200KB 上下，朋友圈页面加载会明显变快。压缩失败会自动回退为原图保存，不会导致漏图。",
+    "default": true
+  },
+  "image_max_side": {
+    "description": "配图长边上限（像素）",
+    "type": "int",
+    "hint": "图片长边超过此值就等比缩小，小图不会放大。1280 在手机上观看已经足够清晰；想让画质更好可调到 1600~1920，代价是文件更大。",
+    "default": 1280,
+    "condition": {
+      "image_compress_enabled": true
+    }
+  },
+  "image_jpeg_quality": {
+    "description": "配图 JPEG 质量",
+    "type": "int",
+    "hint": "40~95，越高越清晰也越大。85 是体积与画质的平衡点；觉得糊就往 90 调，觉得还是大就往 75 调。",
+    "default": 85,
+    "condition": {
+      "image_compress_enabled": true
+    }
+  },
   "advanced_mode": {
     "description": "⚙️ 启用高级配置",
     "type": "bool",
