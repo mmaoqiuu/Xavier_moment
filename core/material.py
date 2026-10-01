@@ -97,7 +97,7 @@ class MaterialCollector:
             base_dir = Path.cwd()
             data_dir = base_dir / "data"
             if not data_dir.exists() or not data_dir.is_dir():
-                # 尝试从当前文件位置推断: plugins/astrbot_plugin_moment/core/material.py -> data/
+                # 尝试从当前文件位置推断: plugins/astrbot_plugin_xavier_moment/core/material.py -> data/
                 data_dir = Path(__file__).parent.parent.parent.parent
             
             if not data_dir.exists():

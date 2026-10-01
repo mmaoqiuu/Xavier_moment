@@ -36,27 +36,66 @@ class LikeEngine:
             return False
         return self._roll(self._float("ai_like_probability", 0.6))
 
-    def npc_picks(self, exclude: Optional[set] = None) -> list[str]:
-        """这次来点赞的 NPC 名单：先掷一次概率，再随机挑 0~npc_like_count_max 人。
+    def npc_pick_plan(self, exclude: Optional[set] = None, force: bool = False) -> dict:
+        """这次来点赞的完整结果：掷一次概率，命中后随机挑 1~npc_like_count_max 人。
+
+        返回 {"hit": 有没有命中, "names": [...], "probability": 概率,
+              "pool_size": 候选人数, "forced": 是不是保底硬给的}。
+        把「有没有命中」一并交出去，调用方才能写进日志——否则页面上一片空白时，
+        分不清是这次没抽中，还是功能坏了。
 
         exclude 里的名字优先避开（正在冷却的人不重复刷存在感）；
         避开之后没人了就把名单放宽，宁可来一个人也不留空。
+
+        force=True 时跳过概率这一掷，直接挑人。这是保底用的：连着好几条动态
+        都没人赞之后，下一条无论如何都要来一个，免得骰子一直空转。
         """
+        probability = self._float("npc_like_probability", 0.5)
+        plan = {
+            "hit": False,
+            "names": [],
+            "probability": probability,
+            "pool_size": 0,
+            "forced": bool(force),
+        }
         if not self.enabled() or not self.npc_engine:
-            return []
-        if not self._roll(self._float("npc_like_probability", 0.5)):
-            return []
+            return plan
 
         limit = self._int("npc_like_count_max", 2, minimum=0)
-        if limit <= 0:
-            return []
-
         exclude = exclude or set()
         all_names = [n["name"] for n in self.npc_engine.parse_list()]
         pool = [name for name in all_names if name not in exclude] or all_names
-        if not pool:
-            return []
-        return random.sample(pool, min(limit, len(pool)))
+        plan["pool_size"] = len(pool)
+        if limit <= 0 or not pool:
+            # 没人可挑，保底也无从谈起
+            plan["forced"] = False
+            return plan
+
+        if not force and not self._roll(probability):
+            return plan
+
+        # 人数也随机：每次都整整齐齐来同一批人，一眼就假
+        count = random.randint(1, min(limit, len(pool)))
+        plan["hit"] = True
+        plan["names"] = random.sample(pool, count)
+        return plan
+
+    def npc_picks(self, exclude: Optional[set] = None) -> list[str]:
+        """兼容旧调用：只要名单，不要抽签详情。"""
+        return self.npc_pick_plan(exclude=exclude)["names"]
+
+    # ------------------------------------------------------------------
+    # 保底：连着几条没人赞，就强制来一次
+    # ------------------------------------------------------------------
+
+    def pity_limit(self) -> int:
+        """连着多少条动态没有 NPC 点赞后，下一条强制来一次。0 = 关闭保底。"""
+        return self._int("npc_like_pity", 2, minimum=0)
+
+    def should_force(self, streak: int) -> bool:
+        """按「已连续落空多少条」判断这一条要不要走保底。"""
+        limit = self.pity_limit()
+        return limit > 0 and streak >= limit
 
     # ------------------------------------------------------------------
     # 内部工具
@@ -67,15 +106,21 @@ class LikeEngine:
         return random.random() < probability
 
     def _float(self, key: str, default: float) -> float:
+        raw = self.config.get(key, None)
+        if raw is None or raw == "":
+            raw = default
         try:
-            value = float(self.config.get(key, default) or 0)
+            value = float(raw)
         except (TypeError, ValueError):
             value = default
         return max(0.0, min(1.0, value))
 
     def _int(self, key: str, default: int, minimum: int = 0) -> int:
+        raw = self.config.get(key, None)
+        if raw is None or raw == "":
+            raw = default
         try:
-            value = int(float(self.config.get(key, default) or default))
+            value = int(float(raw))
         except (TypeError, ValueError):
             value = default
         return max(minimum, value)

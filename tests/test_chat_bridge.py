@@ -55,7 +55,7 @@ def _display_name(config, author, author_name=""):
 npc_stub.display_name = _display_name
 sys.modules["moment_core.npc_engine"] = npc_stub
 
-from moment_core.chat_bridge import ChatBridge  # noqa: E402
+from moment_core.chat_bridge import ChatBridge, find_repeat, text_overlap  # noqa: E402
 
 
 class FakeConversation:
@@ -171,6 +171,62 @@ class TestChatBridge(unittest.IsolatedAsyncioTestCase):
     async def test_config_session_overrides(self):
         bridge, _ = build([{"role": "user", "content": "hi"}], {"chat_bridge_session": "手动会话"})
         self.assertEqual(await bridge._resolve_session(), "手动会话")
+
+
+    async def test_said_lines_are_listed_for_dedup(self):
+        """他说过的话会单独列出来，并明确要求别在朋友圈重复。"""
+        bridge, _ = build([
+            {"role": "user", "content": "我出门了，去超市买点东西"},
+            {"role": "assistant", "content": "慢点走，顺便带点好吃的回来"},
+        ])
+        text = await bridge.collect_context()
+        self.assertIn("【你刚在私聊里已经说过的话", text)
+        self.assertIn("- 慢点走，顺便带点好吃的回来", text)
+
+    async def test_repeat_hit_catches_rephrased_repeat(self):
+        """只换了几个字的复读也要抓得住。"""
+        bridge, _ = build([
+            {"role": "user", "content": "我出门了"},
+            {"role": "assistant", "content": "慢点走，顺便带点好吃的回来"},
+        ])
+        await bridge.collect_context()
+        self.assertTrue(bridge.repeat_hit("适合慢慢走，顺便带点好吃的回来"))
+        self.assertEqual(bridge.repeat_hit("那我在玄关等你回来"), "")
+
+    async def test_dedup_can_be_turned_off(self):
+        bridge, _ = build([
+            {"role": "assistant", "content": "慢点走，顺便带点好吃的回来"},
+        ], {"chat_bridge_dedup_enabled": False})
+        text = await bridge.collect_context()
+        self.assertNotIn("已经说过的话", text)
+        self.assertEqual(bridge.repeat_hit("慢点走，顺便带点好吃的回来"), "")
+
+    async def test_short_lines_do_not_trigger_dedup(self):
+        """「嗯」「好的」这种短句不参与判重，免得误伤正常回应。"""
+        bridge, _ = build([
+            {"role": "assistant", "content": "嗯"},
+            {"role": "assistant", "content": "好的"},
+        ])
+        text = await bridge.collect_context()
+        self.assertNotIn("已经说过的话", text)
+        self.assertEqual(bridge.repeat_hit("嗯嗯好的我知道了"), "")
+
+
+class TestOverlap(unittest.TestCase):
+    """纯文本判重，不涉及会话与配置。"""
+
+    def test_rephrased_sentence_scores_high(self):
+        score = text_overlap("慢点走，顺便带点好吃的回来", "适合慢慢走，顺便带点好吃的回来")
+        self.assertGreater(score, 0.6)
+
+    def test_unrelated_sentence_scores_low(self):
+        score = text_overlap("慢点走，顺便带点好吃的回来", "今天的草莓蛋糕很甜")
+        self.assertLess(score, 0.2)
+
+    def test_find_repeat_picks_best_match(self):
+        said = ["今天有点冷，多穿一件", "慢点走，顺便带点好吃的回来"]
+        self.assertEqual(find_repeat("适合慢慢走，顺便带点好吃的回来", said, 0.6), said[1])
+        self.assertEqual(find_repeat("你到家了吗", said, 0.6), "")
 
 
 if __name__ == "__main__":

@@ -39,7 +39,13 @@ class MomentServer:
         """启动 HTTP 服务器。"""
         self._password = password.strip()
 
-        app = web.Application(middlewares=[self._cors_middleware])
+        # 手机直出的照片转成 base64 后轻松超过 1MB，aiohttp 的默认上限（1MB）会把
+        # 上传直接顶回 413，而前端只往 console 里写一行，看起来就是「点了发布没反应」。
+        # 这里放宽到 20MB 兜底，图片体积本身由前端压缩控制。
+        app = web.Application(
+            middlewares=[self._cors_middleware],
+            client_max_size=20 * 1024 * 1024,
+        )
 
         # 注册路由
         app.router.add_get("/", self._handle_index)
@@ -272,7 +278,7 @@ async function doLogin() {
         # 他发的动态和你的动态一样，都会有 NPC 来评论
         self.plugin._trigger_npc_comments(post["id"])
         # 点赞是另一条独立的线：他可能赞你，NPC 也可能赞
-        self.plugin._trigger_likes(post["id"], "user")
+        await self.plugin._trigger_likes(post["id"], "user")
 
         return web.json_response({"post": post})
 

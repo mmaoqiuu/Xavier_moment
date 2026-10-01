@@ -25,6 +25,45 @@ def display_name(config: dict, author: str, author_name: str = "") -> str:
     return (config.get("user_name") or "").strip() or "我"
 
 
+STRANGER_WORDS = ("不熟", "不认识", "没见过", "陌生", "素未谋面")
+
+
+def persona_says_stranger(persona: str, ai_name: str) -> bool:
+    """人设里是否明确写了「跟他不熟」。
+
+    只在同一个短句里同时出现名字和不熟类词才算——人设里顺带说一句
+    「不熟的客人」不该算数；按短句切开是为了「与沈星回不熟，但与 user 很熟」
+    这种写法能各算各的。
+    """
+    if not persona or not ai_name:
+        return False
+    for clause in re.split(r"[，。；、,;]", persona):
+        if ai_name in clause and any(word in clause for word in STRANGER_WORDS):
+            return True
+    return False
+
+
+def filter_chain_candidates(others: list, is_stranger: bool) -> list:
+    """链式接话的候选：跟他生疏的人，候选里不含他的话。
+
+    跟他不熟的人不会顺着他的话往下接；对着别人（比如你）说话不受影响。
+    """
+    if not is_stranger:
+        return list(others)
+    return [c for c in others if c.get("author") != "ai"]
+
+
+def parse_stranger_names(raw) -> set:
+    """解析手动名单：换行、逗号、顿号、分号都当分隔符。"""
+    names = set()
+    for line in str(raw or "").splitlines() or [""]:
+        for part in re.split(r"[,，、;；]+", line):
+            part = part.strip()
+            if part:
+                names.add(part)
+    return names
+
+
 class NpcEngine:
     """按配置挑 NPC、生成评论内容。"""
 
@@ -83,6 +122,24 @@ class NpcEngine:
 
     def enabled(self) -> bool:
         return bool(self.config.get("npc_enabled", True)) and bool(self.parse_list())
+
+    def ai_strangers(self) -> set:
+        """跟他生疏的 NPC：手动名单 + 人设里明确写了「与他不熟」的。
+
+        关系本来就写在各人的人设里，这里把它读出来用，省得再让人重复填一遍；
+        配置项只是人设没写清楚时的补充。
+        """
+        names = parse_stranger_names(self.config.get("npc_ai_strangers", ""))
+        ai_name = (self.config.get("ai_name") or "").strip()
+        if ai_name:
+            for npc in self.parse_list():
+                if persona_says_stranger(npc.get("persona", ""), ai_name):
+                    names.add(npc["name"])
+        return names
+
+    def is_stranger_to_ai(self, name: str) -> bool:
+        """这个人是不是跟他生疏。"""
+        return bool(name) and name in self.ai_strangers()
 
     # ------------------------------------------------------------------
     # 挑人
@@ -144,8 +201,10 @@ class NpcEngine:
             ]
 
             target = force_target
-            if target is None and others and random.random() < self._float("npc_chain_probability", 0.5):
-                target = random.choice(others)
+            if target is None and others:
+                candidates = filter_chain_candidates(others, self.is_stranger_to_ai(npc.get("name", "")))
+                if candidates and random.random() < self._float("npc_chain_probability", 0.5):
+                    target = random.choice(candidates)
 
             lines = [
                 f"你是「{npc['name']}」。你的人设：{npc['persona']}",
@@ -168,6 +227,11 @@ class NpcEngine:
                     f"请你接着 {target_name} 的这句「{target_text}」说一句——是评论区里接话，不是单纯评论这条动态。",
                     f'输出的 "reply_to" 必须正好是「{target_name}」。',
                 ]
+                if self._unfamiliar_with(npc, target):
+                    lines.append(
+                        f"注意：按你的人设，你和 {target_name} 并不熟——这一句要客气、简短，"
+                        "不要调侃、不要接梗、不要像老朋友那样熟络。"
+                    )
             else:
                 lines += [
                     "",
@@ -183,6 +247,8 @@ class NpcEngine:
                 "- 绝对不要换行，不要自我介绍，不要用第三人称称呼自己",
                 "- 不要复述动态原文，不要说「作为朋友」这类旁白",
                 "- 拿不准的事就别提，不要编造具体的作品名、地名、人名",
+                "- 严格按你的人设判断你和在场每个人的亲疏：跟谁不熟，就别用熟人之间才有的语气"
+                "（调侃、接梗、追问、撒娇），也别主动去接他的话；点头之交客气、简短就好",
             ]
             if not self.config.get("post_with_emoji", True):
                 lines.append("- 不要使用 emoji")
@@ -237,6 +303,16 @@ class NpcEngine:
     # ------------------------------------------------------------------
     # 内部工具
     # ------------------------------------------------------------------
+
+    def _unfamiliar_with(self, npc: dict, target: dict) -> bool:
+        """这个 NPC 跟 target 那条评论的作者是不是生疏。
+
+        目前只有「他」这一侧有关系信息（用户和各 NPC 的关系没有配置项），
+        所以只在他身上生效，其他作者一律按熟人处理。
+        """
+        if target.get("author") != "ai":
+            return False
+        return self.is_stranger_to_ai(npc.get("name", ""))
 
     async def _persona(self) -> str:
         if self.material:

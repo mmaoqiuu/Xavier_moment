@@ -1267,12 +1267,43 @@
             return res.json();
         }
 
+        // 轻提示：失败原因必须让人看见，只写 console 等于没写
+        function toast(msg, ms = 3600) {
+            let el = document.getElementById('momentToast');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'momentToast';
+                el.style.cssText = 'position:fixed;left:50%;bottom:12%;transform:translateX(-50%);'
+                    + 'max-width:82%;padding:10px 16px;border-radius:10px;background:rgba(0,0,0,.82);'
+                    + 'color:#fff;font-size:14px;line-height:1.5;z-index:9999;white-space:pre-wrap;'
+                    + 'text-align:center;pointer-events:none;opacity:0;transition:opacity .2s;';
+                document.body.appendChild(el);
+            }
+            el.textContent = msg;
+            el.style.opacity = '1';
+            clearTimeout(el._timer);
+            el._timer = setTimeout(() => { el.style.opacity = '0'; }, ms);
+        }
+
         async function apiPost(path, body = {}) {
             const res = await fetch(API_PREFIX + path, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
             });
+            // 出错时后端返回的不是 JSON（413 就是纯文本），直接 res.json() 会抛出
+            // 一堆看不懂的解析错误；页面又只往 console 写，看起来就像「点了没反应」。
+            if (!res.ok) {
+                let detail = '';
+                try {
+                    detail = (await res.json()).error || '';
+                } catch (_) {
+                    detail = 'HTTP ' + res.status;
+                }
+                const err = new Error(detail || ('HTTP ' + res.status));
+                err.status = res.status;
+                throw err;
+            }
             return res.json();
         }
 
@@ -1476,18 +1507,52 @@
             document.getElementById('imageInput').click();
         });
 
-        document.getElementById('imageInput').addEventListener('change', (e) => {
-            const files = Array.from(e.target.files);
-            files.forEach(file => {
-                if (pendingImages.length >= 9) return;
+        // 上传前先压一道：手机直出照片转成 base64 动辄好几 MB，传上去要么被服务端
+        // 顶回来，要么在局域网里慢慢磨。长边压到 1600、转 JPEG 后通常只剩一两百 KB，
+        // 朋友圈看图完全够用。
+        function compressImage(file, maxEdge = 1600, quality = 0.85) {
+            return new Promise((resolve) => {
                 const reader = new FileReader();
                 reader.onload = (ev) => {
-                    pendingImages.push(ev.target.result);
-                    renderImagePreviews();
+                    const raw = ev.target.result;
+                    const img = new Image();
+                    img.onload = () => {
+                        try {
+                            let w = img.width;
+                            let h = img.height;
+                            const scale = Math.min(1, maxEdge / Math.max(w, h));
+                            w = Math.max(1, Math.round(w * scale));
+                            h = Math.max(1, Math.round(h * scale));
+                            const canvas = document.createElement('canvas');
+                            canvas.width = w;
+                            canvas.height = h;
+                            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                            // 统一转 JPEG：PNG 截图压完可能比原图还大
+                            resolve(canvas.toDataURL('image/jpeg', quality));
+                        } catch (_) {
+                            resolve(raw);
+                        }
+                    };
+                    // 解不开的格式（比如 iPhone 的 HEIC）退回原图，交给后端判断
+                    img.onerror = () => resolve(raw);
+                    img.src = raw;
                 };
+                reader.onerror = () => resolve('');
                 reader.readAsDataURL(file);
             });
+        }
+
+        document.getElementById('imageInput').addEventListener('change', (e) => {
+            const room = 9 - pendingImages.length;
+            const picked = Array.from(e.target.files).slice(0, Math.max(0, room));
             e.target.value = '';
+            if (!picked.length) return;
+            Promise.all(picked.map(f => compressImage(f))).then(list => {
+                list.forEach(dataUrl => {
+                    if (dataUrl) pendingImages.push(dataUrl);
+                });
+                renderImagePreviews();
+            });
         });
 
         function renderImagePreviews() {
@@ -1549,6 +1614,11 @@
                 }
             } catch (e) {
                 console.error('发布失败', e);
+                if (e && e.status === 413) {
+                    toast('图片太大了，服务端没收下。换张小一点的图再试。');
+                } else {
+                    toast('发布失败：' + ((e && e.message) || e));
+                }
             }
 
             postBtn.disabled = false;

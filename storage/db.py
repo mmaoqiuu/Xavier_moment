@@ -1,12 +1,14 @@
 """AstrBot Moment Plugin — 数据库层
 
-管理 posts（帖子）和 comments（评论）的 SQLite 存储。
+管理 posts（帖子）和 comments（评论）的 SQLite 存储，
+以及 jobs（延迟任务待办）——待办落库后，插件重载也丢不了。
 """
 from __future__ import annotations
 
+import json
 import aiosqlite
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from astrbot.api import logger
@@ -91,11 +93,27 @@ class MomentDatabase:
                 value TEXT NOT NULL DEFAULT ''
             );
 
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,                     -- 任务类型：npc_comment / ai_like ...
+                post_id INTEGER DEFAULT NULL,           -- 关联动态（便于按动态查待办）
+                payload TEXT NOT NULL DEFAULT '{}',     -- 任务参数（JSON）
+                dedup_key TEXT NOT NULL DEFAULT '',     -- 同一件事的唯一键，防止重复排队
+                due_at TEXT NOT NULL,                   -- 计划执行时间
+                status TEXT NOT NULL DEFAULT 'pending', -- pending / done / failed / expired
+                attempts INTEGER NOT NULL DEFAULT 0,    -- 已经尝试过几次（含被重载打断的）
+                last_error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
             CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(is_read, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);
             CREATE INDEX IF NOT EXISTS idx_likes_post ON likes(post_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_dedup ON jobs(dedup_key) WHERE dedup_key <> '';
+            CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, due_at);
         """)
         await self._conn.commit()
 
@@ -360,6 +378,35 @@ class MomentDatabase:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
+    async def count_npc_comments_total(self, post_id: int) -> int:
+        """这条动态下一共有多少条 NPC 评论（重载补跑时判断「这波是不是已经来过了」）。"""
+        cursor = await self._conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE post_id = ? AND author = 'npc'",
+            (post_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def count_ai_replies_to_npc(self, post_id: int) -> int:
+        """他在这条动态下回过 NPC 几条（只数回复 NPC 的，不含他自己开的楼）。"""
+        cursor = await self._conn.execute(
+            """SELECT COUNT(*) FROM comments c
+               JOIN comments p ON c.parent_comment_id = p.id
+               WHERE c.post_id = ? AND c.author = 'ai' AND p.author = 'npc'""",
+            (post_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def has_ai_comment(self, post_id: int) -> bool:
+        """他是否已经在这条动态下评论过（不含他回复别人的那些）。"""
+        cursor = await self._conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE post_id = ? AND author = 'ai' AND parent_comment_id IS NULL",
+            (post_id,),
+        )
+        row = await cursor.fetchone()
+        return bool(row and row[0])
+
     async def has_ai_reply_to(self, comment_id: int) -> bool:
         """某条评论是否已经被回复过（防止同一条被回两遍）。"""
         cursor = await self._conn.execute(
@@ -413,3 +460,110 @@ class MomentDatabase:
             (key, value),
         )
         await self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Jobs（延迟任务待办：重载后接着跑）
+    # ------------------------------------------------------------------
+
+    async def add_job(
+        self,
+        kind: str,
+        payload: dict,
+        due_at: str,
+        dedup_key: str = "",
+        post_id: Optional[int] = None,
+    ) -> Optional[int]:
+        """登记一条待办，返回任务 id；同一件事已经在排队时返回 None。
+
+        dedup_key 相同表示「同一件事」：
+          · 还在 pending → 不重复排队（返回 None）
+          · 已经跑完 / 失败 / 过期 → 重置成新的待办（重新排一次）
+        """
+        now = datetime.now().isoformat()
+        text = json.dumps(payload or {}, ensure_ascii=False)
+        cursor = await self._conn.execute(
+            """INSERT OR IGNORE INTO jobs
+               (kind, post_id, payload, dedup_key, due_at, status, attempts, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
+            (kind, post_id, text, dedup_key or "", due_at, now, now),
+        )
+        if cursor.rowcount > 0:
+            await self._conn.commit()
+            return cursor.lastrowid
+
+        if not dedup_key:
+            await self._conn.commit()
+            return None
+
+        cursor = await self._conn.execute(
+            "SELECT id, status FROM jobs WHERE dedup_key = ?", (dedup_key,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            await self._conn.commit()
+            return None
+        if row["status"] == "pending":
+            await self._conn.commit()
+            return None
+        await self._conn.execute(
+            """UPDATE jobs SET status = 'pending', due_at = ?, attempts = 0,
+                      last_error = '', updated_at = ? WHERE id = ?""",
+            (due_at, now, row["id"]),
+        )
+        await self._conn.commit()
+        return row["id"]
+
+    async def get_pending_jobs(self, limit: int = 500) -> list[dict]:
+        """所有还没跑完的待办，按计划时间从早到晚。"""
+        cursor = await self._conn.execute(
+            "SELECT * FROM jobs WHERE status = 'pending' ORDER BY due_at ASC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def mark_job(self, job_id: int, status: str, error: str = "", bump_attempts: bool = False) -> None:
+        """更新待办状态：done（跑完）/ failed（出错）/ expired（过期丢弃）。"""
+        now = datetime.now().isoformat()
+        await self._conn.execute(
+            """UPDATE jobs SET status = ?, last_error = ?,
+                      attempts = attempts + ?, updated_at = ? WHERE id = ?""",
+            (status, (error or "")[:500], 1 if bump_attempts else 0, now, job_id),
+        )
+        await self._conn.commit()
+
+    async def count_pending_jobs(self, kind: str = "", post_id: Optional[int] = None) -> int:
+        """还没跑的待办数量，可按类型 / 动态过滤。"""
+        sql = "SELECT COUNT(*) FROM jobs WHERE status = 'pending'"
+        args: list = []
+        if kind:
+            sql += " AND kind = ?"
+            args.append(kind)
+        if post_id is not None:
+            sql += " AND post_id = ?"
+            args.append(post_id)
+        cursor = await self._conn.execute(sql, tuple(args))
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def expire_all_pending_jobs(self) -> int:
+        """把所有没跑的待办标成过期（续跑关闭时用），返回处理条数。"""
+        now = datetime.now().isoformat()
+        cursor = await self._conn.execute(
+            "UPDATE jobs SET status = 'expired', updated_at = ? WHERE status = 'pending'",
+            (now,),
+        )
+        await self._conn.commit()
+        return cursor.rowcount or 0
+
+    async def purge_jobs(self, keep_days: int = 7) -> int:
+        """清掉已经跑完/失败/过期的历史待办，只留最近 keep_days 天的。"""
+        if keep_days < 0:
+            return 0
+        cutoff = (datetime.now() - timedelta(days=keep_days)).isoformat()
+        cursor = await self._conn.execute(
+            "DELETE FROM jobs WHERE status <> 'pending' AND updated_at <= ?", (cutoff,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount or 0
+
