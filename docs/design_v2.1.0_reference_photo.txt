@@ -1,0 +1,100 @@
+设计文档 · astrbot_plugin_xavier_moment v2.1.0
+主题：动态配图读「小回相机」的参考图
+日期：2026-10-03
+文件：core/image_bridge.py（主）、_conf_schema.json、tests/test_image_bridge.py
+
+────────────────────────────────
+一、问题
+────────────────────────────────
+现在配图调用链是：
+    shot（一句拍摄指令）→ camera._generate_image(shot, ratio, None)
+第三个参数是参考图，我们一直传 None。
+后果：
+1. 走的是 generations（纯文生图），小回相机那套
+   「参考图锁家居环境/玩偶/猫/手部/戒指」全部没生效；
+2. 也没有用它的 _build_prompt，出图只拿到一句裸指令，
+   质感与「他随手拍」不一致。
+表现：朋友圈的配图是他家以外的东西、物件长得不一样。
+
+────────────────────────────────
+二、目标
+────────────────────────────────
+1. 出图时带上小回相机的参考图（走它的 edits 链路）；
+2. 参考图怎么挑，不自建，全部借它自己的检索与 prompt 构建：
+   _find_reference_images / _search_reference_by_text /
+   _build_prompt / _make_grouped_reference_sheets；
+3. 拿不到参考图 / 对方版本不兼容 / 任何异常 → 安静退回旧行为
+   （裸指令 + 无参考图），绝不连累发帖；
+4. 一切失败都只影响「有没有图」，不影响文字动态。
+
+────────────────────────────────
+三、流程（v2.1.0）
+────────────────────────────────
+shot 文案
+  ↓
+① scene = camera._infer_scene(shot)（拿不到就用 daily_no_face）
+② refs = camera._find_reference_images(shot, scene, hint)
+   hint = 配置 image_reference_hint（逗号分隔，可留空）
+③ refs 为空时的兜底：自动关键词
+   读小回相机 reference_dir 下的文件夹名，去掉「参考/图/库」后缀当关键词，
+   若这个词出现在 shot 里（例：shot 提到「露台」→ 文件夹「露台参考」命中），
+   就调 camera._search_reference_by_text(root, kw, strong=True) 找一张。
+   —— 这一步是为了补它自家 home_map 只认「沈星回家的客厅」这类目录名、
+      而实际参考库叫「客厅参考」「露台参考」的缺口。
+④ 命中参考图：
+   prompt, ratio, _ = camera._build_prompt(
+       want=shot, ratio=ratio, scene=scene,
+       requested_objects=camera._detect_requested_objects(shot),
+       has_reference=True, ref_path=refs[0], ref_paths=refs)
+   多张参考 → _make_grouped_reference_sheets(refs) 拼一张 sheet 再喂。
+⑤ 未命中：仍用旧行为（shot 原文，第三参 None）。
+⑥ 出图：
+   带参考图走 edits，超时用 image_reference_timeout（默认 150s，区间 30~180）；
+   不带参考图仍用 image_generate_timeout（默认 90s，上限 90）。
+   带参考图失败且相机配置 fallback_to_generations_when_reference_fails=true
+   → 按它的意愿降级重试一次（无参考图）；
+   它默认 false 则不再重试，直接放弃配图（尊重「不让脸漂移」的取向）。
+
+────────────────────────────────
+四、拍摄指令的微调
+────────────────────────────────
+在 SHOT_PROMPT_TEMPLATE 里加一条：
+「画面里如果出现他家里的东西（家具、玩偶、植物、宠物、灯等），
+  写清它是什么、在哪个房间或位置」
+理由：参考图命中靠关键词，shot 写清主体才能对上参考库的文件/文件夹名；
+仍然是 AI 自然写画面，不硬塞固定物件。
+
+────────────────────────────────
+五、配置
+────────────────────────────────
+新增（普通档）：
+  image_use_reference      bool  默认 true   出图时读小回相机参考图
+  image_reference_hint     str   默认 ""     手动指定参考图关键词，逗号分隔
+  image_reference_timeout  int   默认 150    带参考图时超时（30~180）
+
+────────────────────────────────
+六、兼容与降级矩阵
+────────────────────────────────
+· 小回相机没有 _find_reference_images（老版本/假实现） → 旧行为，不动
+· 有检索但库为空 / 没配 reference_dir            → 旧行为
+· _build_prompt 抛错                              → 旧行为
+· edits 失败且对方禁止降级                        → 本条动态不带图
+· 任何异常                                        → 上层 try 兜住，只发文字
+
+────────────────────────────────
+七、测试（tests/test_image_bridge.py）
+────────────────────────────────
+保留原有全部用例（FakeCamera 无检索方法 → 仍走旧路径，ref_path 断言不变）。
+新增：RefCamera 假件 + 5 条
+ 1. 命中参考图：ref_path 传进去、prompt 用相机构建的、ratio 透传
+ 2. image_use_reference=false：完全不碰检索，ref_path 仍为 None
+ 3. 带参考图超时走 image_reference_timeout
+ 4. 带参考图失败 + 对方允许降级 → 自动无参考重试成功
+ 5. 文件夹名自动关键词兜底：shot 提「露台」→ 调到 _search_reference_by_text
+
+────────────────────────────────
+八、不做的事
+────────────────────────────────
+· 不复制小回相机的检索/评分逻辑（只调用它的方法）
+· 不改小回相机任何文件与配置
+· 不动数据库、接口、网页端

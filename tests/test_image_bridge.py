@@ -9,6 +9,7 @@
 import asyncio
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -68,6 +69,9 @@ def make_bridge(tmp_path, camera=None, *, config=None, llm=None, **ctx_kwargs):
         "image_generate_probability": 1.0,
         "image_generate_style_hint": "",
         "image_generate_timeout": 90,
+        "image_use_reference": True,
+        "image_reference_hint": "",
+        "image_reference_timeout": 150,
     }
     conf.update(config or {})
     return ImageBridge(
@@ -299,3 +303,250 @@ def test_shot_prompt_forbids_people(tmp_path):
 )
 def test_clean_line(raw, expected):
     assert ImageBridge._clean_line(raw) == expected
+
+
+# ----------------------------------------------------------------------
+# v2.1.0：配图读参考图
+# ----------------------------------------------------------------------
+
+
+class RefCamera(FakeCamera):
+    """带参考图检索的小回相机假件（方法名与真件一致）。"""
+
+    def __init__(self, *, refs=(), reference_dir="", fallback=False, raises_with_ref=None, **kw):
+        super().__init__(**kw)
+        self._refs = [Path(r) for r in refs]
+        self.reference_dir = str(reference_dir)
+        self.fallback_to_generations_when_reference_fails = fallback
+        self._raises_with_ref = raises_with_ref
+        self.searches = []
+        self.scenes = []
+        self.built = []
+
+    def _infer_scene(self, want):
+        return "daily_no_face"
+
+    def _detect_requested_objects(self, want):
+        return []
+
+    def _find_reference_images(self, want, scene, hint=""):
+        self.scenes.append({"want": want, "scene": scene, "hint": hint})
+        return list(self._refs)
+
+    def _build_prompt(
+        self, want, ratio, scene, requested_objects, has_reference, ref_path, ref_paths=None
+    ):
+        self.built.append(
+            {
+                "want": want,
+                "ratio": ratio,
+                "has_reference": has_reference,
+                "ref_paths": list(ref_paths or []),
+            }
+        )
+        ref_name = Path(ref_path).name if ref_path else None
+        return f"CAMERA-PROMPT[{want}][ref={ref_name}]", ratio or "3:4", scene
+
+    def _search_reference_by_text(self, root, text, strong=False):
+        self.searches.append(text)
+        for ref in self._refs:
+            if text in str(ref):
+                return ref
+        return None
+
+    async def _generate_image(self, prompt, ratio, ref_path):
+        if self._raises_with_ref is not None and ref_path is not None:
+            self.calls.append({"prompt": prompt, "ratio": ratio, "ref_path": ref_path})
+            raise self._raises_with_ref
+        return await super()._generate_image(prompt, ratio, ref_path)
+
+
+def test_reference_is_used_when_found(tmp_path):
+    ref = tmp_path / "露台参考" / "露台-午后.jpg"
+    ref.parent.mkdir(parents=True, exist_ok=True)
+    ref.write_bytes(b"ref")
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = RefCamera(refs=[ref], result=src)
+
+    name = run(make_bridge(tmp_path, camera, llm=default_llm).try_generate_for_post("露台的午后"))
+
+    assert name, "命中参考图后应该照常出图"
+    call = camera.calls[0]
+    assert call["ref_path"] == ref
+    assert call["prompt"].startswith("CAMERA-PROMPT["), "命中参考图应改用相机自己的提示词"
+    assert camera.built[0]["has_reference"] is True
+    assert camera.built[0]["ref_paths"] == [ref]
+
+
+def test_reference_can_be_switched_off(tmp_path):
+    ref = tmp_path / "ref.png"
+    ref.write_bytes(b"ref")
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = RefCamera(refs=[ref], result=src)
+    bridge = make_bridge(tmp_path, camera, config={"image_use_reference": False}, llm=default_llm)
+
+    run(bridge.try_generate_for_post("露台的午后"))
+
+    assert camera.scenes == [], "关掉开关后不该去检索参考图"
+    assert camera.calls[0]["ref_path"] is None
+
+
+def test_reference_timeout_used_when_reference(tmp_path, monkeypatch):
+    """带参考图时要用 image_reference_timeout 那套超时。"""
+    ref = tmp_path / "ref.png"
+    ref.write_bytes(b"ref")
+    camera = RefCamera(refs=[ref], result=tmp_path / "slow.png", delay=0.5)
+    bridge = make_bridge(tmp_path, camera, llm=default_llm)
+
+    seen = {}
+    monkeypatch.setattr(
+        bridge, "_ref_timeout", lambda: seen.setdefault("ref", 0.05) or 0.05
+    )
+    monkeypatch.setattr(
+        bridge, "_timeout", lambda: seen.setdefault("plain", 9.0) or 9.0
+    )
+
+    assert run(bridge.try_generate_for_post("露台的午后")) == ""
+    assert seen["ref"] == 0.05, "带参考图应该走参考图超时，而不是被 9 秒放过去"
+    assert camera.calls and camera.calls[0]["ref_path"] == ref
+
+
+def test_reference_failure_retries_without_reference_when_camera_allows(tmp_path):
+    ref = tmp_path / "ref.png"
+    ref.write_bytes(b"ref")
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = RefCamera(
+        refs=[ref], result=src, fallback=True, raises_with_ref=RuntimeError("edits 挂了")
+    )
+
+    name = run(make_bridge(tmp_path, camera, llm=default_llm).try_generate_for_post("露台"))
+
+    assert name, "对方允许降级时应该无参考图重试成功"
+    assert [c["ref_path"] for c in camera.calls] == [ref, None]
+
+
+def test_reference_failure_keeps_no_image_when_camera_forbids_fallback(tmp_path):
+    ref = tmp_path / "ref.png"
+    ref.write_bytes(b"ref")
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = RefCamera(refs=[ref], result=src, raises_with_ref=RuntimeError("edits 挂了"))
+
+    assert run(make_bridge(tmp_path, camera, llm=default_llm).try_generate_for_post("露台")) == ""
+    assert len(camera.calls) == 1, "对方禁止降级时不该偷偷无参考重试"
+
+
+def test_reference_folder_name_used_as_fallback_keyword(tmp_path):
+    """检索没命中时，用参考库文件夹名当关键词再搜一次。"""
+    lib = tmp_path / "生图参考"
+    ref = lib / "露台参考" / "露台-傍晚.jpg"
+    ref.parent.mkdir(parents=True, exist_ok=True)
+    ref.write_bytes(b"ref")
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+
+    class HardToFindCamera(RefCamera):
+        def _find_reference_images(self, want, scene, hint=""):
+            self.scenes.append({"want": want, "scene": scene, "hint": hint})
+            return []
+
+    camera = HardToFindCamera(refs=[ref], reference_dir=lib, result=src)
+
+    async def shot_llm(prompt, system_prompt=""):
+        return "露台的傍晚，风把桌布吹起来一点"
+
+    name = run(
+        make_bridge(tmp_path, camera, llm=shot_llm).try_generate_for_post("露台的傍晚")
+    )
+
+    assert name
+    assert "露台" in camera.searches
+    assert camera.calls[0]["ref_path"] == ref
+
+
+def test_manual_hint_keyword_is_used(tmp_path):
+    lib = tmp_path / "生图参考"
+    ref = lib / "兔球球" / "bunny.png"
+    ref.parent.mkdir(parents=True, exist_ok=True)
+    ref.write_bytes(b"ref")
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+
+    class EmptyCamera(RefCamera):
+        def _find_reference_images(self, want, scene, hint=""):
+            self.scenes.append({"want": want, "scene": scene, "hint": hint})
+            return []
+
+    camera = EmptyCamera(refs=[ref], reference_dir=lib, result=src)
+    bridge = make_bridge(
+        tmp_path, camera, config={"image_reference_hint": "兔球球"}, llm=default_llm
+    )
+
+    run(bridge.try_generate_for_post("窗边有一本书"))
+
+    assert camera.scenes[0]["hint"] == "兔球球"
+    assert "兔球球" in camera.searches
+    assert camera.calls[0]["ref_path"] == ref
+
+
+def test_reference_methods_missing_still_works(tmp_path):
+    """对方是老版本、没有检索方法时，必须安静退回旧路径。"""
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = SimpleNamespace(default_ratio="3:4")
+
+    async def generate(prompt, ratio, ref_path):
+        camera.calls = getattr(camera, "calls", [])
+        camera.calls.append({"prompt": prompt, "ref_path": ref_path})
+        return src
+
+    camera._generate_image = generate
+
+    name = run(make_bridge(tmp_path, camera, llm=default_llm).try_generate_for_post("随手拍"))
+
+    assert name
+    assert camera.calls[0]["ref_path"] is None
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("x"), OSError("y"), ValueError("z")])
+def test_reference_lookup_errors_are_swallowed(tmp_path, exc):
+    ref = tmp_path / "ref.png"
+    ref.write_bytes(b"ref")
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+
+    class BoomCamera(RefCamera):
+        def _find_reference_images(self, want, scene, hint=""):
+            raise exc
+
+        def _search_reference_by_text(self, root, text, strong=False):
+            raise exc
+
+    camera = BoomCamera(refs=[ref], reference_dir=tmp_path, result=src)
+
+    name = run(make_bridge(tmp_path, camera, llm=default_llm).try_generate_for_post("露台"))
+
+    assert name, "参考图这一步炸了也要照常出图（只是不带参考图）"
+    assert camera.calls[0]["ref_path"] is None
+
+
+def test_hint_keywords_split():
+    assert ImageBridge._hint_keywords("露台, 兔球球；客厅") == ["露台", "兔球球", "客厅"]
+    assert ImageBridge._hint_keywords("") == []
+
+
+@pytest.mark.parametrize(
+    "folder,expected",
+    [
+        ("露台参考", ["露台"]),
+        ("兔球球", ["兔球球"]),
+        ("手部参考图", ["手部"]),
+        ("参考", []),
+        ("", []),
+    ],
+)
+def test_keywords_of_folder(folder, expected):
+    assert ImageBridge._keywords_of(folder) == expected

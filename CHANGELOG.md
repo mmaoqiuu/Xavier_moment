@@ -1,5 +1,30 @@
 # 更新日志
 
+## v2.1.0
+### 新增（动态配图会读「小回相机」的参考图）
+- `core/image_bridge.py`：出图时不再固定传空参考图。
+  - 先借小回相机自己的 `_find_reference_images(shot, scene, hint)` 挑图，
+    `scene` 问它的 `_infer_scene`；命中后不再用裸指令，而是用它的
+    `_build_prompt(...)` 生成完整提示词；多张参考用它的
+    `_make_grouped_reference_sheets` 拼成一张 sheet 再喂。
+  - 第一家检索没命中时，用它的 `_search_reference_by_text(root, kw, strong=True)` 兜一次：
+    关键词来自配置 `image_reference_hint`，以及参考库文件夹名去掉「参考/图/库」后缀
+    （例：文件夹「露台参考」+ 拍摄指令提到「露台」→ 命中）。目录名带 5 分钟缓存，不读盘。
+  - 带参考图走 edits 接口，超时改用新配置 `image_reference_timeout`（默认 150，区间 30~180）；
+    不带参考图仍用 `image_generate_timeout`（默认 90）。
+  - 带参考图出图失败时，只有小回相机自己开了
+    `fallback_to_generations_when_reference_fails` 才重试一次无参考图，
+    默认（false）直接放弃配图，避免悄悄换掉画面主体。
+  - 对方版本没有这些方法 / 参考库为空 / 任一步抛错：一律安静退回旧行为（裸指令 + 无参考图）。
+- 拍摄指令模板加一条：画面里出现他家里的东西（家具、玩偶、植物、宠物、灯之类）时，
+  写清是什么、在哪个房间或位置 —— 参考图命中靠关键词，说清主体才对得上参考库。
+- 新配置：`image_use_reference`（默认 true，关掉即回到旧行为）、
+  `image_reference_hint`（默认留空，可手填「露台」「兔球球」等）、
+  `image_reference_timeout`（默认 150 秒）。
+- 不改小回相机任何文件与配置，也不动数据库、接口与网页端。
+- 测试：`tests/test_image_bridge.py` 新增 5 条（命中参考图 / 关闭开关 / 带参考图超时 /
+  允许降级时重试 / 文件夹名自动关键词兜底），原有用例全部保留。
+
 ## v2.0.2
 ### 修改（网页图标：收藏夹图标 / 添加到主屏幕图标替换为新素材）
 - 按用户提供的新图（紫调渐变 + 虚线圈 + 白色星芒，源图 800x520 JPEG）重新生成素材：

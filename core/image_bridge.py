@@ -4,11 +4,16 @@
 直接借「小回相机」的现成管线——它已经调好了手机随手拍质感、
 人物建模质感锁定、锁脸参考图、主备接口切换和超时控制。
 
-这一层只做四件事：
+这一层只做五件事：
   1. 找到小回相机的插件实例（拿不到就当没有，安静跳过）
   2. 把一条动态改写成一句「拍什么」的拍摄指令
-  3. 请它出图
-  4. 把图拷进朋友圈自己的 images 目录，返回文件名
+  3. 借它自己的参考图检索，挑出这次要喂的参考图（拿不到就不喂）
+  4. 请它出图
+  5. 把图拷进朋友圈自己的 images 目录，返回文件名
+
+参考图这一步只「调用」它的方法（_find_reference_images /
+_search_reference_by_text / _build_prompt / _make_grouped_reference_sheets），
+不复制它的评分与提示词逻辑；对方版本对不上就退回「无参考图」的旧路径。
 
 对外只有一个方法 try_generate_for_post()。
 它不抛异常 —— 配图是锦上添花，失败绝不能连累发帖。
@@ -17,7 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 import shutil
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +50,16 @@ ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 # 出图超时的硬上限：小回相机自己限制在 85 秒内，这里再兜一层
 MAX_TIMEOUT = 90
 
+# 带参考图时走它的 edits 接口，比纯文生图慢，另给一套更宽的区间
+MAX_REF_TIMEOUT = 180
+MIN_REF_TIMEOUT = 30
+DEFAULT_REF_TIMEOUT = 150
+
+# 参考库文件夹名去掉这些后缀就是关键词（「露台参考」→「露台」）
+REF_FOLDER_SUFFIXES = ("参考图", "参考", "图库", "文件夹", "库")
+# 参考库目录名缓存：目录结构极少变，别每发一条就读一次盘
+REF_FOLDER_CACHE_TTL = 300
+
 # 图片压缩默认值（可在配置里改）
 DEFAULT_MAX_SIDE = 1280   # 长边像素上限
 DEFAULT_QUALITY = 85      # JPEG 质量
@@ -63,6 +80,8 @@ SHOT_PROMPT_TEMPLATE = """他刚发了一条朋友圈动态：
 输出要求：
 - 只输出一句拍摄指令，10~40 字
 - 说清画面里有什么、什么光线、什么氛围
+- 画面里如果出现他家里的东西（家具、玩偶、植物、宠物、灯之类），
+  写清那是什么、在哪个房间或位置
 - 画面里不要出现人，也不要出现人脸和手
 - 不要以「照片」「图片」「拍摄」「画面」这类词开头
 - 不要解释、不要编号、不要引号、不要 markdown
@@ -86,6 +105,9 @@ class ImageBridge:
         self.data_dir = Path(data_dir)
         self.llm_caller = llm_caller
         self.images_dir = self.data_dir / "images"
+        # 参考库文件夹名缓存（惰性填充）
+        self._ref_folder_cache: Optional[list] = None
+        self._ref_folder_cache_at = 0.0
         try:
             self.images_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -147,6 +169,22 @@ class ImageBridge:
         except (TypeError, ValueError):
             value = MAX_TIMEOUT
         return float(max(5, min(MAX_TIMEOUT, value)))
+
+    def _use_reference(self) -> bool:
+        """是否在出图时读小回相机的参考图（默认开）。"""
+        return bool(self.config.get("image_use_reference", True))
+
+    def _reference_hint(self) -> str:
+        """用户手动指定的参考图关键词，逗号分隔，可留空。"""
+        return str(self.config.get("image_reference_hint", "") or "").strip()
+
+    def _ref_timeout(self) -> float:
+        """带参考图时走 edits 接口，给一套更宽的超时。"""
+        try:
+            value = int(self.config.get("image_reference_timeout", DEFAULT_REF_TIMEOUT))
+        except (TypeError, ValueError):
+            value = DEFAULT_REF_TIMEOUT
+        return float(max(MIN_REF_TIMEOUT, min(MAX_REF_TIMEOUT, value)))
 
     def _compress_enabled(self) -> bool:
         return bool(self.config.get("image_compress_enabled", True))
@@ -249,27 +287,241 @@ class ImageBridge:
         return text
 
     # ------------------------------------------------------------------
+    # 参考图：借小回相机自己的检索挑图
+    # ------------------------------------------------------------------
+
+    async def _prepare_shot_and_reference(self, camera, shot: str, ratio: str):
+        """借它的参考图检索 + prompt 构建，返回 (prompt, ratio, ref_path, used_ref)。
+
+        任何一步不对劲都退回旧行为：shot 原文 + 不带参考图。
+        """
+        if not self._use_reference():
+            return shot, ratio, None, False
+
+        refs = await self._pick_reference(camera, shot, self._reference_hint())
+        if not refs:
+            logger.info("[moment] 这次没匹配到参考图，按纯文生图出片")
+            return shot, ratio, None, False
+
+        builder = getattr(camera, "_build_prompt", None)
+        if not callable(builder):
+            logger.info("[moment] 「小回相机」没有 _build_prompt，退回纯拍摄指令")
+            return shot, ratio, None, False
+
+        try:
+            scene = self._camera_scene(camera, shot)
+            objects = []
+            detector = getattr(camera, "_detect_requested_objects", None)
+            if callable(detector):
+                objects = list(detector(shot) or [])
+
+            prompt, final_ratio, _final_scene = builder(
+                want=shot,
+                ratio=ratio,
+                scene=scene,
+                requested_objects=objects,
+                has_reference=True,
+                ref_path=refs[0],
+                ref_paths=refs,
+            )
+        except Exception:
+            logger.exception("[moment] 借小回相机构建提示词失败，退回纯拍摄指令")
+            return shot, ratio, None, False
+
+        ref_to_send = refs[0]
+        if len(refs) > 1:
+            ref_to_send = await self._merge_references(camera, refs)
+        logger.info(
+            "[moment] 配图带上参考图："
+            + "、".join(f"{r.parent.name}/{r.name}" for r in refs)
+        )
+        return (
+            str(prompt or "").strip() or shot,
+            str(final_ratio or ratio),
+            ref_to_send,
+            True,
+        )
+
+    async def _merge_references(self, camera, refs: list) -> Path:
+        """多张参考图：借它的拼图方法压成一张 sheet，失败就用第一张。"""
+        maker = getattr(camera, "_make_grouped_reference_sheets", None)
+        if not callable(maker):
+            return refs[0]
+        try:
+            sheets = list(maker(refs) or [])
+        except Exception:
+            logger.exception("[moment] 参考图拼合失败，只用第一张")
+            return refs[0]
+        if not sheets:
+            return refs[0]
+        try:
+            first = Path(sheets[0])
+            return first if first.exists() else refs[0]
+        except Exception:
+            return refs[0]
+
+    async def _pick_reference(self, camera, shot: str, hint: str) -> list:
+        """用它的方法挑参考图；拿不到就返回空列表。"""
+        try:
+            scene = self._camera_scene(camera, shot)
+            finder = getattr(camera, "_find_reference_images", None)
+            refs = []
+            if callable(finder):
+                found = await asyncio.to_thread(finder, shot, scene, hint)
+                refs = [Path(r) for r in (found or []) if r]
+            if refs:
+                return refs
+            return await self._search_reference_fallback(camera, shot, hint)
+        except Exception:
+            logger.exception("[moment] 参考图检索失败，改为不带参考图出图")
+            return []
+
+    def _camera_scene(self, camera, shot: str) -> str:
+        """问它的场景判断；拿不到就按「日常不露脸」。"""
+        infer = getattr(camera, "_infer_scene", None)
+        if callable(infer):
+            try:
+                scene = str(infer(shot) or "").strip()
+                if scene:
+                    return scene
+            except Exception:
+                logger.debug("[moment] 调用「小回相机」场景判断失败，用默认场景")
+        return "daily_no_face"
+
+    async def _search_reference_fallback(self, camera, shot: str, hint: str) -> list:
+        """第一家检索没命中时，用它的全库搜索兜一次。
+
+        关键词来自两处：配置里手填的 hint，以及参考库文件夹名
+        （去掉「参考/图/库」后缀）——文件夹叫「露台参考」而拍摄指令里提到
+        「露台」时，这一步能把图捞出来。
+        """
+        searcher = getattr(camera, "_search_reference_by_text", None)
+        root = self._camera_reference_dir(camera)
+        if not callable(searcher) or root is None:
+            return []
+
+        for keyword in self._hint_keywords(hint) + await self._auto_keywords(camera, shot):
+            try:
+                found = await asyncio.to_thread(searcher, root, keyword, True)
+            except Exception:
+                logger.debug(f"[moment] 参考图搜索失败：{keyword}")
+                continue
+            if found:
+                logger.info(f"[moment] 参考图兜底命中：{keyword} → {Path(found).name}")
+                return [Path(found)]
+        return []
+
+    @staticmethod
+    def _hint_keywords(hint: str) -> list:
+        """把配置里的关键词串拆成列表。"""
+        return [x for x in re.split(r"[,，、;；\s]+", hint or "") if x.strip()]
+
+    async def _auto_keywords(self, camera, shot: str) -> list:
+        """从拍摄指令里找出能和参考库文件夹名对上的关键词。"""
+        if not shot:
+            return []
+        hits = []
+        for name in await self._camera_folder_names(camera):
+            for keyword in self._keywords_of(name):
+                if keyword in shot and keyword not in hits:
+                    hits.append(keyword)
+        return hits
+
+    async def _camera_folder_names(self, camera) -> list:
+        """读参考库目录名，带缓存（目录结构极少变）。"""
+        now = time.monotonic()
+        if (
+            self._ref_folder_cache is not None
+            and now - self._ref_folder_cache_at < REF_FOLDER_CACHE_TTL
+        ):
+            return list(self._ref_folder_cache)
+
+        names: list = []
+        root = self._camera_reference_dir(camera)
+        if root is not None:
+            try:
+                names = await asyncio.to_thread(
+                    lambda: [d.name for d in root.iterdir() if d.is_dir()]
+                )
+            except Exception:
+                logger.debug("[moment] 读取参考库目录失败，跳过自动参考图")
+        self._ref_folder_cache = list(names)
+        self._ref_folder_cache_at = now
+        return list(names)
+
+    @staticmethod
+    def _keywords_of(folder_name: str) -> list:
+        """「露台参考」→「露台」；去掉后缀后为空则不用。"""
+        name = str(folder_name or "").strip()
+        if not name or name in REF_FOLDER_SUFFIXES:
+            return []
+        for suffix in REF_FOLDER_SUFFIXES:
+            if name.endswith(suffix) and len(name) > len(suffix):
+                name = name[: -len(suffix)]
+                break
+        name = name.strip()
+        return [name] if name and name not in REF_FOLDER_SUFFIXES else []
+
+    @staticmethod
+    def _camera_reference_dir(camera):
+        """拿它的参考库路径；没配、不存在都返回 None。"""
+        raw = getattr(camera, "reference_dir", "") or ""
+        try:
+            root = Path(str(raw))
+            return root if raw and root.exists() else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _camera_allows_no_ref_fallback(camera) -> bool:
+        """它自己是否允许「参考图失败就退回纯文生图」。默认不许。"""
+        try:
+            return bool(getattr(camera, "fallback_to_generations_when_reference_fails", False))
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
     # 请它出图
     # ------------------------------------------------------------------
 
     async def _call_camera(self, camera, shot: str) -> Optional[Path]:
         """请小回相机出图，返回本地图片路径；失败返回 None。"""
         ratio = getattr(camera, "default_ratio", None) or "3:4"
-        timeout = self._timeout()
+        prompt, ratio, ref, used_ref = await self._prepare_shot_and_reference(
+            camera, shot, ratio
+        )
 
+        timeout = self._ref_timeout() if used_ref else self._timeout()
+        path = await self._generate_once(camera, prompt, ratio, ref, timeout, used_ref)
+        if path is not None:
+            return path
+
+        # 带参考图失败：只有它自己允许降级时才重试无参考图，避免悄悄换掉主体
+        if used_ref and self._camera_allows_no_ref_fallback(camera):
+            logger.info("[moment] 带参考图出图失败，按「小回相机」设置降级重试一次")
+            return await self._generate_once(
+                camera, shot, ratio, None, self._timeout(), False
+            )
+        return None
+
+    async def _generate_once(
+        self, camera, prompt: str, ratio: str, ref, timeout: float, used_ref: bool
+    ) -> Optional[Path]:
+        """实际调一次出图，超时/异常/无结果一律返回 None。"""
+        tag = "（带参考图）" if used_ref else ""
         try:
             path = await asyncio.wait_for(
-                camera._generate_image(shot, ratio, None),
+                camera._generate_image(prompt, ratio, ref),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
             logger.warning(
-                f"[moment] 「小回相机」出图超时（>{timeout:.0f}s），本条动态不带图"
+                f"[moment] 「小回相机」出图超时{tag}（>{timeout:.0f}s），本条动态不带图"
             )
             return None
         except Exception as exc:
             logger.warning(
-                f"[moment] 「小回相机」出图失败：{type(exc).__name__}: {exc}"
+                f"[moment] 「小回相机」出图失败{tag}：{type(exc).__name__}: {exc}"
             )
             return None
 
