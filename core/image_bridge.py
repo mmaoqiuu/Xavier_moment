@@ -101,6 +101,13 @@ MAX_LIBRARY_NAMES = 20
 # 参考库里的图片扩展名
 REF_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
+# 单次最多并发几张参考图（含自动匹配的那张）。
+# 面板上可调 1~4：多图能让脸/穿搭/物件同时锁住，但再多收益递减、
+# 请求体积也会跟着涨，且多数 edits 接口对参考图数量有上限。
+DEFAULT_MAX_REFERENCES = 3
+MIN_MAX_REFERENCES = 1
+MAX_MAX_REFERENCES = 4
+
 
 class ImageBridge:
     """朋友圈 ↔ 小回相机 的桥。"""
@@ -191,6 +198,22 @@ class ImageBridge:
     def _reference_hint(self) -> str:
         """用户手动指定的参考图关键词，逗号分隔，可留空。"""
         return str(self.config.get("image_reference_hint", "") or "").strip()
+
+    def _pinned_tokens(self) -> list:
+        """面板里配置的「固定参考图」：文件夹名或图片文件名，逗号分隔。"""
+        return self._hint_keywords(self.config.get("image_reference_pin", ""))
+
+    def _max_references(self) -> int:
+        """单次最多带几张参考图（含自动匹配的那张）。"""
+        try:
+            value = int(self.config.get("image_reference_max", DEFAULT_MAX_REFERENCES))
+        except (TypeError, ValueError):
+            value = DEFAULT_MAX_REFERENCES
+        return max(MIN_MAX_REFERENCES, min(MAX_MAX_REFERENCES, value))
+
+    def _multi_direct(self) -> bool:
+        """多张参考图是否直接交给相机（相机原生支持一次多图参考）。"""
+        return bool(self.config.get("image_reference_multi_direct", True))
 
     def _ref_timeout(self) -> float:
         """带参考图时走 edits 接口，给一套更宽的超时。"""
@@ -341,7 +364,10 @@ class ImageBridge:
         # 否则画面描述里不会出现主体名，参考图喂了也容易被带偏
         want = self._shot_with_hint(shot, hint)
 
-        refs = await self._pick_reference(camera, want, hint)
+        # 两路参考图：面板点名的固定参考图在前（永远带上），自动匹配的在后
+        pinned = await self._pinned_references(camera, want)
+        auto = await self._pick_reference(camera, want, hint)
+        refs = self._merge_ref_list(pinned, auto)
         if not refs:
             logger.info("[moment] 这次没匹配到参考图，按纯文生图出片")
             return shot, ratio, None, False
@@ -371,12 +397,10 @@ class ImageBridge:
             logger.exception("[moment] 借小回相机构建提示词失败，退回纯拍摄指令")
             return shot, ratio, None, False
 
-        ref_to_send = refs[0]
-        if len(refs) > 1:
-            ref_to_send = await self._merge_references(camera, refs)
+        ref_to_send = await self._reference_payload(camera, refs)
         logger.info(
-            "[moment] 配图带上参考图："
-            + "、".join(f"{r.parent.name}/{r.name}" for r in refs)
+            "[moment] 配图带上参考图（%d 张）：" % len(refs)
+            + "、".join(self._describe_refs(refs))
         )
         return (
             str(prompt or "").strip() or shot,
@@ -384,6 +408,120 @@ class ImageBridge:
             ref_to_send,
             True,
         )
+
+    async def _reference_payload(self, camera, refs: list):
+        """决定这次参考图怎么交给相机。
+
+        多图直传优先（相机自己的 edits 链路就吃多张参考图），
+        关掉开关或对方没有多图能力时，退回它自己的拼合对照表。
+        """
+        if not refs:
+            return None
+        if len(refs) == 1:
+            return refs[0]
+        if self._multi_direct() and self._camera_supports_multi_reference(camera):
+            logger.info(
+                "[moment] 多张参考图直传「小回相机」：" + "、".join(self._describe_refs(refs))
+            )
+            return list(refs)
+        return await self._merge_references(camera, refs)
+
+    @staticmethod
+    def _camera_supports_multi_reference(camera) -> bool:
+        """相机能否一次收多张参考图（看它有没有多图 edits 那条链路）。"""
+        try:
+            return callable(getattr(camera, "_call_edits", None))
+        except Exception:
+            return False
+
+    def _merge_ref_list(self, *groups) -> list:
+        """多路参考图合并去重，并截断到面板配置的张数上限。"""
+        merged: list = []
+        for group in groups:
+            for ref in group or []:
+                try:
+                    path = Path(ref)
+                except Exception:
+                    continue
+                if path not in merged:
+                    merged.append(path)
+        limit = self._max_references()
+        if len(merged) > limit:
+            logger.info(
+                "[moment] 参考图超过配置上限 %d 张，只取前 %d 张：%s"
+                % (limit, limit, "、".join(self._describe_refs(merged[limit:])))
+            )
+        return merged[:limit]
+
+    async def _pinned_references(self, camera, shot: str) -> list:
+        """面板点名的固定参考图：文件夹名或图片文件名。
+
+        命中文件夹 → 借它的选图方法进文件夹挑一张；
+        命中文件名 → 在参考库里按名字找。找不到就跳过，不报错。
+        """
+        if not self._use_reference():
+            return []
+        tokens = self._pinned_tokens()
+        if not tokens:
+            return []
+
+        root = self._camera_reference_dir(camera)
+        if root is None:
+            logger.info("[moment] 配置了固定参考图，但「小回相机」参考库为空，跳过")
+            return []
+
+        picked: list = []
+        try:
+            names = await self._camera_folder_names(camera)
+            for token in tokens:
+                hit = next((n for n in names if self._folder_matches(n, token)), None)
+                if hit:
+                    image = await self._pick_one_in_folder(camera, root, hit, shot)
+                else:
+                    image = await asyncio.to_thread(self._find_reference_file, root, token)
+                if image is None:
+                    logger.info(f"[moment] 固定参考图没找到：{token}（跳过）")
+                    continue
+                if Path(image) not in picked:
+                    picked.append(Path(image))
+        except Exception:
+            logger.exception("[moment] 解析固定参考图失败，本次只按自动匹配出图")
+            return []
+
+        if picked:
+            logger.info("[moment] 固定参考图：" + "、".join(self._describe_refs(picked)))
+        return picked
+
+    @staticmethod
+    def _find_reference_file(root, token: str):
+        """在参考库里按文件名找一张图；只认参考库内部的图片。"""
+        key = ImageBridge._normalize_path_token(token)
+        if root is None or not key:
+            return None
+        try:
+            files = [
+                f
+                for f in Path(root).rglob("*")
+                if f.is_file() and f.suffix.lower() in REF_IMAGE_EXTS
+            ]
+        except Exception:
+            logger.debug(f"[moment] 搜索参考图失败：{token}")
+            return None
+        for one in files:
+            if key in (ImageBridge._normalize(one.name), ImageBridge._normalize(one.stem)):
+                return one
+        for one in files:
+            if key in ImageBridge._normalize(one.name):
+                return one
+        return None
+
+    @staticmethod
+    def _normalize_path_token(token: str) -> str:
+        """「脸部/主参考.png」→「主参考」；只取最后一段，防读到库外路径。"""
+        raw = str(token or "").strip().replace("\\", "/")
+        if not raw:
+            return ""
+        return ImageBridge._normalize(raw.split("/")[-1])
 
     async def _merge_references(self, camera, refs: list) -> Path:
         """多张参考图：借它的拼图方法压成一张 sheet，失败就用第一张。"""
@@ -664,6 +802,17 @@ class ImageBridge:
         if path is not None:
             return path
 
+        # 多图直传没成：退回它自己的拼合对照表再试一次，主体别丢
+        if isinstance(ref, list) and len(ref) > 1:
+            sheet = await self._merge_references(camera, ref)
+            if sheet is not None and Path(sheet) != Path(ref[0]):
+                logger.info("[moment] 多图直传失败，改用拼合对照表重试一次")
+                path = await self._generate_once(
+                    camera, prompt, ratio, sheet, timeout, True
+                )
+                if path is not None:
+                    return path
+
         # 带参考图失败：只有它自己允许降级时才重试无参考图，避免悄悄换掉主体
         if used_ref and self._camera_allows_no_ref_fallback(camera):
             logger.info("[moment] 带参考图出图失败，按「小回相机」设置降级重试一次")
@@ -676,7 +825,10 @@ class ImageBridge:
         self, camera, prompt: str, ratio: str, ref, timeout: float, used_ref: bool
     ) -> Optional[Path]:
         """实际调一次出图，超时/异常/无结果一律返回 None。"""
-        tag = "（带参考图）" if used_ref else ""
+        if isinstance(ref, list) and ref:
+            tag = f"（带 {len(ref)} 张参考图）"
+        else:
+            tag = "（带参考图）" if used_ref else ""
         try:
             path = await asyncio.wait_for(
                 camera._generate_image(prompt, ratio, ref),

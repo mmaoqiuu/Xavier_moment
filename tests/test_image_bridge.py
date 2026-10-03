@@ -669,3 +669,179 @@ def test_library_names_are_offered_to_llm(tmp_path):
 )
 def test_folder_matches(folder, keyword, expected):
     assert ImageBridge._folder_matches(folder, keyword) is expected
+
+
+# ----------------------------------------------------------------------
+# v2.2.0：面板配置的固定参考图 + 多图直传
+# ----------------------------------------------------------------------
+
+
+class MultiRefCamera(RefCamera):
+    """支持一次收多张参考图的小回相机假件。"""
+
+    def __init__(self, *, sheet_dir=None, **kw):
+        super().__init__(**kw)
+        self.sheet_calls = []
+        self._sheet_dir = Path(sheet_dir) if sheet_dir else None
+
+    def _call_edits(self, prompt, ratio, ref_path, endpoint):
+        """真件里这条链路能吃多张参考图，用它作为「支持多图」的探测点。"""
+        return {"data": []}
+
+    def _pick_from_folder_by_text(self, root, folder_name, shot, strict=False, strong=True):
+        """不给提示词打分，交给首图兜底，测试更可控。"""
+        return None
+
+    def _make_grouped_reference_sheets(self, refs):
+        refs = list(refs)
+        self.sheet_calls.append(refs)
+        base = self._sheet_dir or Path(refs[0]).parent
+        sheet = Path(base) / "_sheet.png"
+        sheet.parent.mkdir(parents=True, exist_ok=True)
+        sheet.write_bytes(b"sheet")
+        return [sheet]
+
+
+def make_pin_library(tmp_path):
+    """参考库：两个文件夹各一张图。"""
+    root = tmp_path / "refs"
+    doll = root / "兔球球" / "兔球球-正脸.jpg"
+    yard = root / "露台参考" / "露台-午后.jpg"
+    for one in (doll, yard):
+        one.parent.mkdir(parents=True, exist_ok=True)
+        one.write_bytes(b"ref")
+    return root, doll, yard
+
+
+def test_pinned_reference_from_panel_is_sent(tmp_path):
+    """面板点名的固定参考图，要和自动匹配的那张一起发出去。"""
+    root, doll, yard = make_pin_library(tmp_path)
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = MultiRefCamera(refs=[yard], reference_dir=root, result=src)
+    bridge = make_bridge(
+        tmp_path, camera, config={"image_reference_pin": "兔球球"}, llm=default_llm
+    )
+
+    name = run(bridge.try_generate_for_post("阳台上晒太阳"))
+
+    assert name
+    refs = camera.calls[0]["ref_path"]
+    assert isinstance(refs, list), "默认应把多张参考图原样直传"
+    assert refs == [doll, yard]
+    assert camera.built[0]["ref_paths"] == [doll, yard]
+    assert camera.sheet_calls == [], "直传成功就不该再拼图"
+
+
+def test_pinned_reference_by_filename(tmp_path):
+    """固定参考图也可以直接填文件名。"""
+    root, doll, _yard = make_pin_library(tmp_path)
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = MultiRefCamera(refs=[], reference_dir=root, result=src)
+    bridge = make_bridge(
+        tmp_path, camera, config={"image_reference_pin": "兔球球-正脸"}, llm=default_llm
+    )
+
+    run(bridge.try_generate_for_post("随手拍"))
+
+    assert camera.calls[0]["ref_path"] == doll
+
+
+def test_pinned_reference_count_is_limited(tmp_path):
+    """固定参考图超过面板上限时，按顺序截断。"""
+    root = tmp_path / "refs"
+    for idx in range(4):
+        one = root / f"物件{idx}" / f"图{idx}.jpg"
+        one.parent.mkdir(parents=True, exist_ok=True)
+        one.write_bytes(b"ref")
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = MultiRefCamera(refs=[], reference_dir=root, result=src)
+    bridge = make_bridge(
+        tmp_path,
+        camera,
+        config={"image_reference_pin": "物件0,物件1,物件2,物件3", "image_reference_max": 2},
+        llm=default_llm,
+    )
+
+    run(bridge.try_generate_for_post("桌面"))
+
+    refs = camera.calls[0]["ref_path"]
+    assert isinstance(refs, list) and len(refs) == 2
+    assert [r.parent.name for r in refs] == ["物件0", "物件1"]
+
+
+def test_multi_direct_off_falls_back_to_sheet(tmp_path):
+    """关掉直传开关，就沿用旧的拼合对照表。"""
+    root, doll, yard = make_pin_library(tmp_path)
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = MultiRefCamera(refs=[yard], reference_dir=root, result=src)
+    bridge = make_bridge(
+        tmp_path,
+        camera,
+        config={"image_reference_pin": "兔球球", "image_reference_multi_direct": False},
+        llm=default_llm,
+    )
+
+    run(bridge.try_generate_for_post("阳台上晒太阳"))
+
+    assert camera.sheet_calls and camera.sheet_calls[0] == [doll, yard]
+    assert camera.calls[0]["ref_path"] == tmp_path / "refs" / "兔球球" / "_sheet.png"
+
+
+def test_multi_direct_failure_retries_with_sheet(tmp_path):
+    """多图直传失败时，用拼合对照表重试一次，主体不丢。"""
+
+    class BoomMultiCamera(MultiRefCamera):
+        async def _generate_image(self, prompt, ratio, ref_path):
+            if isinstance(ref_path, list):
+                self.calls.append({"prompt": prompt, "ratio": ratio, "ref_path": ref_path})
+                raise RuntimeError("edits 挂了")
+            return await super()._generate_image(prompt, ratio, ref_path)
+
+    root, doll, yard = make_pin_library(tmp_path)
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = BoomMultiCamera(refs=[yard], reference_dir=root, result=src)
+    bridge = make_bridge(
+        tmp_path, camera, config={"image_reference_pin": "兔球球"}, llm=default_llm
+    )
+
+    name = run(bridge.try_generate_for_post("阳台上晒太阳"))
+
+    assert name, "拼合重试成功就该出图"
+    assert isinstance(camera.calls[0]["ref_path"], list)
+    assert camera.calls[1]["ref_path"] == tmp_path / "refs" / "兔球球" / "_sheet.png"
+
+
+def test_missing_pinned_reference_is_ignored(tmp_path):
+    """固定参考图名字填错，只跳过那一条，不影响出图。"""
+    root, _doll, yard = make_pin_library(tmp_path)
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = MultiRefCamera(refs=[yard], reference_dir=root, result=src)
+    bridge = make_bridge(
+        tmp_path, camera, config={"image_reference_pin": "不存在的东西"}, llm=default_llm
+    )
+
+    name = run(bridge.try_generate_for_post("阳台"))
+
+    assert name
+    assert camera.calls[0]["ref_path"] == yard
+
+
+def test_pinned_reference_never_reads_outside_library(tmp_path):
+    """固定参考图只认参考库里的文件，填库外路径也不读。"""
+    root, _doll, _yard = make_pin_library(tmp_path)
+    outside = tmp_path / "secret.jpg"
+    outside.write_bytes(b"secret")
+    camera = MultiRefCamera(refs=[], reference_dir=root, result=tmp_path / "shot.png")
+    bridge = make_bridge(
+        tmp_path, camera, config={"image_reference_pin": str(outside)}, llm=default_llm
+    )
+
+    run(bridge.try_generate_for_post("随手拍"))
+
+    assert camera.calls[0]["ref_path"] is None
