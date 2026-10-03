@@ -76,7 +76,7 @@ SHOT_PROMPT_TEMPLATE = """他刚发了一条朋友圈动态：
 （心情：{mood}）
 
 请你根据这条动态，想一个他此刻会顺手拍下来的画面。
-
+{library_block}
 输出要求：
 - 只输出一句拍摄指令，10~40 字
 - 说清画面里有什么、什么光线、什么氛围
@@ -86,6 +86,20 @@ SHOT_PROMPT_TEMPLATE = """他刚发了一条朋友圈动态：
 - 不要以「照片」「图片」「拍摄」「画面」这类词开头
 - 不要解释、不要编号、不要引号、不要 markdown
 """
+
+# 参考库清单块：让模型写出「兔球球」这类真名，出图才能对上参考图
+LIBRARY_BLOCK_TEMPLATE = """
+他家里这些东西是有照片存档的（下次用到请照着名字写，别自己改名）：
+{names}
+- 画面里确实出现上面某个东西时，直接用它的原名
+- 不要为了用上它们而硬塞进画面
+"""
+
+# 参考库里最多往提示词里塞多少个名字，避免提示词过长
+MAX_LIBRARY_NAMES = 20
+
+# 参考库里的图片扩展名
+REF_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 class ImageBridge:
@@ -136,7 +150,7 @@ class ImageBridge:
             if camera is None:
                 return ""
 
-            shot = await self._make_shot_prompt(content, mood)
+            shot = await self._make_shot_prompt(content, mood, camera)
             if not shot:
                 return ""
 
@@ -240,14 +254,19 @@ class ImageBridge:
     # 动态 → 拍摄指令
     # ------------------------------------------------------------------
 
-    async def _make_shot_prompt(self, content: str, mood: str) -> str:
-        """把一条动态改写成一句拍摄指令。"""
+    async def _make_shot_prompt(self, content: str, mood: str, camera=None) -> str:
+        """把一条动态改写成一句拍摄指令。
+
+        camera 传进来时，会把参考库里的主体名（「兔球球」这类真名）
+        一起给模型看：只有指令里出现真名，后面的参考图检索才对得上。
+        """
         if self.llm_caller is None:
             return ""
 
         prompt = SHOT_PROMPT_TEMPLATE.format(
             content=(content or "")[:300],
             mood=(mood or "").strip() or "日常",
+            library_block=await self._library_block(camera),
         )
         try:
             raw = await self.llm_caller(prompt, system_prompt=SHOT_SYSTEM_PROMPT)
@@ -266,6 +285,25 @@ class ImageBridge:
             shot = f"{shot}，{extra}"
 
         return shot[:200]
+
+    async def _library_block(self, camera) -> str:
+        """把参考库里的主体名整理成提示词里的一段；拿不到就返回空串。"""
+        if camera is None or not self._use_reference():
+            return ""
+        try:
+            names = []
+            for folder_name in await self._camera_folder_names(camera):
+                for keyword in self._keywords_of(folder_name):
+                    if keyword not in names:
+                        names.append(keyword)
+            if not names:
+                return ""
+            if len(names) > MAX_LIBRARY_NAMES:
+                names = names[:MAX_LIBRARY_NAMES]
+            return LIBRARY_BLOCK_TEMPLATE.format(names="、".join(names))
+        except Exception:
+            logger.debug("[moment] 读取参考库清单失败，按没有参考库处理")
+            return ""
 
     @staticmethod
     def _clean_line(raw) -> str:
@@ -298,7 +336,12 @@ class ImageBridge:
         if not self._use_reference():
             return shot, ratio, None, False
 
-        refs = await self._pick_reference(camera, shot, self._reference_hint())
+        hint = self._reference_hint()
+        # 手填了关键词时，把它一并写进交给相机的「拍什么」，
+        # 否则画面描述里不会出现主体名，参考图喂了也容易被带偏
+        want = self._shot_with_hint(shot, hint)
+
+        refs = await self._pick_reference(camera, want, hint)
         if not refs:
             logger.info("[moment] 这次没匹配到参考图，按纯文生图出片")
             return shot, ratio, None, False
@@ -309,14 +352,14 @@ class ImageBridge:
             return shot, ratio, None, False
 
         try:
-            scene = self._camera_scene(camera, shot)
+            scene = self._camera_scene(camera, want)
             objects = []
             detector = getattr(camera, "_detect_requested_objects", None)
             if callable(detector):
-                objects = list(detector(shot) or [])
+                objects = list(detector(want) or [])
 
             prompt, final_ratio, _final_scene = builder(
-                want=shot,
+                want=want,
                 ratio=ratio,
                 scene=scene,
                 requested_objects=objects,
@@ -360,9 +403,32 @@ class ImageBridge:
         except Exception:
             return refs[0]
 
+    @staticmethod
+    def _shot_with_hint(shot: str, hint: str) -> str:
+        """手填关键词时把它接进拍摄指令，让画面描述里带上主体名。"""
+        hint = (hint or "").strip()
+        if not hint:
+            return shot
+        return f"{shot}（画面主体：{hint}）"
+
     async def _pick_reference(self, camera, shot: str, hint: str) -> list:
-        """用它的方法挑参考图；拿不到就返回空列表。"""
+        """挑这次要喂的参考图，四步，越靠前越准。
+
+        1. 配置里点名的参考库文件夹（如「兔球球」）——直接取那个文件夹的图
+        2. 借「小回相机」自己的检索
+        3. 拍摄指令里出现参考库文件夹名——同样直接取该文件夹的图
+        4. 它的全库搜索兜一次
+        """
         try:
+            named = await self._folder_reference_for_keywords(
+                camera, self._hint_keywords(hint), shot, limit=1
+            )
+            if named:
+                logger.info(
+                    "[moment] 按配置指定取参考图：" + "、".join(self._describe_refs(named))
+                )
+                return named
+
             scene = self._camera_scene(camera, shot)
             finder = getattr(camera, "_find_reference_images", None)
             refs = []
@@ -371,10 +437,112 @@ class ImageBridge:
                 refs = [Path(r) for r in (found or []) if r]
             if refs:
                 return refs
+
+            auto = await self._folder_reference_for_keywords(
+                camera, await self._auto_keywords(camera, shot), shot, limit=2
+            )
+            if auto:
+                logger.info(
+                    "[moment] 按参考库文件夹名取参考图："
+                    + "、".join(self._describe_refs(auto))
+                )
+                return auto
+
             return await self._search_reference_fallback(camera, shot, hint)
         except Exception:
             logger.exception("[moment] 参考图检索失败，改为不带参考图出图")
             return []
+
+    @staticmethod
+    def _describe_refs(refs: list) -> list:
+        """把参考图路径写成「文件夹/文件名」，方便看日志。"""
+        out = []
+        for ref in refs:
+            try:
+                path = Path(ref)
+                out.append(f"{path.parent.name}/{path.name}")
+            except Exception:
+                out.append(str(ref))
+        return out
+
+    async def _folder_reference_for_keywords(
+        self, camera, keywords: list, shot: str, limit: int = 1
+    ) -> list:
+        """关键词命中参考库文件夹名时，直接进那个文件夹挑图。
+
+        为什么绕过相机的检索：它的选图是按「主体大类」写死的
+        （脸/猫/狗/娃娃/手/衣柜…），而参考库里的文件夹是自由命名的。
+        叫「兔球球」的玩偶文件夹它认不出来，于是整条动态就没参考图。
+        这里只做「名字对得上就取」，不复制它的评分逻辑。
+        """
+        root = self._camera_reference_dir(camera)
+        if root is None or not keywords:
+            return []
+
+        names = await self._camera_folder_names(camera)
+        picked: list = []
+        for keyword in keywords:
+            hit = next((n for n in names if self._folder_matches(n, keyword)), None)
+            if not hit:
+                continue
+            image = await self._pick_one_in_folder(camera, root, hit, shot)
+            if image is not None and image not in picked:
+                picked.append(image)
+            if len(picked) >= limit:
+                break
+        return picked
+
+    @classmethod
+    def _folder_matches(cls, folder_name: str, keyword: str) -> bool:
+        """「兔球球」「小狗玩偶参考」这类文件夹名与关键词是否对得上。"""
+        key = cls._normalize(keyword)
+        name = cls._normalize(folder_name)
+        if len(key) < 2 or not name:
+            return False
+        if key in name:
+            return True
+        stem = cls._normalize(cls._strip_suffix(folder_name))
+        return bool(stem) and (stem == key or (len(stem) >= 2 and stem in key))
+
+    async def _pick_one_in_folder(self, camera, root, folder_name: str, shot: str):
+        """进某个参考文件夹挑一张图；相机挑不出来就取文件夹里第一张。"""
+        picker = getattr(camera, "_pick_from_folder_by_text", None)
+        if callable(picker):
+            try:
+                image = await asyncio.to_thread(
+                    picker, root, folder_name, shot or "", True, True
+                )
+                if image:
+                    return Path(image)
+            except Exception:
+                logger.debug(f"[moment] 「小回相机」在 {folder_name} 里选图失败，改用首图")
+
+        try:
+            folder = Path(root) / folder_name
+            files = sorted(
+                f
+                for f in folder.iterdir()
+                if f.is_file() and f.suffix.lower() in REF_IMAGE_EXTS
+            )
+            return files[0] if files else None
+        except Exception:
+            logger.debug(f"[moment] 读取参考文件夹失败: {folder_name}")
+            return None
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """去掉空白与常见标点，用来做文件夹名匹配。"""
+        text = str(text or "").lower()
+        return re.sub(r"[\s\-_，。、“”‘’！!？?（）()\[\]【】·.,:：/\\]+", "", text)
+
+    @staticmethod
+    def _strip_suffix(folder_name: str) -> str:
+        """「小狗玩偶参考」→「小狗玩偶」。"""
+        name = str(folder_name or "").strip()
+        for suffix in REF_FOLDER_SUFFIXES:
+            if name.endswith(suffix) and len(name) > len(suffix):
+                return name[: -len(suffix)].strip()
+        return name
 
     def _camera_scene(self, camera, shot: str) -> str:
         """问它的场景判断；拿不到就按「日常不露脸」。"""

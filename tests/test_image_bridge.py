@@ -440,7 +440,7 @@ def test_reference_failure_keeps_no_image_when_camera_forbids_fallback(tmp_path)
 
 
 def test_reference_folder_name_used_as_fallback_keyword(tmp_path):
-    """检索没命中时，用参考库文件夹名当关键词再搜一次。"""
+    """拍摄指令里写到参考库文件夹名时，直接取那个文件夹的图。"""
     lib = tmp_path / "生图参考"
     ref = lib / "露台参考" / "露台-傍晚.jpg"
     ref.parent.mkdir(parents=True, exist_ok=True)
@@ -463,8 +463,7 @@ def test_reference_folder_name_used_as_fallback_keyword(tmp_path):
     )
 
     assert name
-    assert "露台" in camera.searches
-    assert camera.calls[0]["ref_path"] == ref
+    assert camera.calls[0]["ref_path"] == ref, "名字对得上就该喂它的参考图"
 
 
 def test_manual_hint_keyword_is_used(tmp_path):
@@ -487,8 +486,8 @@ def test_manual_hint_keyword_is_used(tmp_path):
 
     run(bridge.try_generate_for_post("窗边有一本书"))
 
-    assert camera.scenes[0]["hint"] == "兔球球"
-    assert "兔球球" in camera.searches
+    assert camera.calls[0]["ref_path"] == ref, "点名了就得用这个文件夹的图"
+    assert "兔球球" in camera.built[0]["want"]
     assert camera.calls[0]["ref_path"] == ref
 
 
@@ -550,3 +549,123 @@ def test_hint_keywords_split():
 )
 def test_keywords_of_folder(folder, expected):
     assert ImageBridge._keywords_of(folder) == expected
+
+
+# ----------------------------------------------------------------------
+# v2.1.1：参考库文件夹是自由命名的（「兔球球」），相机自己认不出来
+# ----------------------------------------------------------------------
+
+
+class FolderOnlyCamera(RefCamera):
+    """真相机的行为：拍摄指令里没有它的主体大类关键词时，检索直接落空。"""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.folder_picks = []
+
+    def _find_reference_images(self, want, scene, hint=""):
+        self.scenes.append({"want": want, "scene": scene, "hint": hint})
+        return []
+
+    def _search_reference_by_text(self, root, text, strong=False):
+        self.searches.append(text)
+        return None
+
+    def _pick_from_folder_by_text(
+        self, ref_root, folder_name, text, fallback_primary=True, allow_random=True
+    ):
+        folder = Path(ref_root) / folder_name
+        files = sorted(f for f in folder.iterdir() if f.is_file())
+        if not files:
+            return None
+        self.folder_picks.append(folder_name)
+        return files[0]
+
+
+def make_plush_library(tmp_path):
+    """参考库里只有自由命名的「兔球球」文件夹。"""
+    root = tmp_path / "生图参考"
+    doll = root / "兔球球" / "兔球球-阳台.png"
+    doll.parent.mkdir(parents=True, exist_ok=True)
+    doll.write_bytes(b"ref")
+    return root, doll
+
+
+def test_named_folder_used_when_camera_finds_nothing(tmp_path):
+    """动态里写到「兔球球」，相机认不出来，也要带上它的参考图。"""
+    root, doll = make_plush_library(tmp_path)
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = FolderOnlyCamera(result=src, reference_dir=root)
+
+    async def llm(prompt, system_prompt=""):
+        return "阳台藤椅上晒着的兔球球，午后暖光"
+
+    name = run(make_bridge(tmp_path, camera, llm=llm).try_generate_for_post("晒玩偶"))
+
+    assert name
+    assert camera.calls[0]["ref_path"] == doll
+    assert camera.built and camera.built[0]["has_reference"] is True
+
+
+def test_named_folder_used_when_hint_points_at_it(tmp_path):
+    """配置里点名「兔球球」时，即使指令里没写也得带上参考图。"""
+    root, doll = make_plush_library(tmp_path)
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = FolderOnlyCamera(result=src, reference_dir=root)
+    bridge = make_bridge(
+        tmp_path, camera, config={"image_reference_hint": "兔球球"}, llm=default_llm
+    )
+
+    name = run(bridge.try_generate_for_post("晒太阳"))
+
+    assert name
+    assert camera.calls[0]["ref_path"] == doll
+    assert "兔球球" in camera.built[0]["want"], "点名的关键词要写进交给相机的拍摄指令"
+
+
+def test_unrelated_post_takes_no_reference(tmp_path):
+    """跟参考库对不上的动态，不许硬塞参考图。"""
+    root, _doll = make_plush_library(tmp_path)
+    src = tmp_path / "shot.png"
+    src.write_bytes(b"x")
+    camera = FolderOnlyCamera(result=src, reference_dir=root)
+
+    async def llm(prompt, system_prompt=""):
+        return "书桌上的台灯，暖黄光线"
+
+    name = run(make_bridge(tmp_path, camera, llm=llm).try_generate_for_post("看了一页书"))
+
+    assert name, "没参考图也要照常出图"
+    assert camera.calls[0]["ref_path"] is None
+
+
+def test_library_names_are_offered_to_llm(tmp_path):
+    """参考库里的名字要告诉模型，它才写得出「兔球球」。"""
+    root, _doll = make_plush_library(tmp_path)
+    camera = FolderOnlyCamera(result=tmp_path / "shot.png", reference_dir=root)
+    seen = {}
+
+    async def llm(prompt, system_prompt=""):
+        seen["prompt"] = prompt
+        return "阳台上的兔球球"
+
+    run(make_bridge(tmp_path, camera, llm=llm).try_generate_for_post("晒太阳"))
+
+    assert "兔球球" in seen["prompt"]
+
+
+@pytest.mark.parametrize(
+    "folder,keyword,expected",
+    [
+        ("兔球球", "兔球球", True),
+        ("兔球球", "球球", True),
+        ("小狗玩偶参考", "小狗玩偶", True),
+        ("露台参考", "露台", True),
+        ("露台参考", "客厅", False),
+        ("兔球球", "台灯", False),
+    ],
+)
+def test_folder_matches(folder, keyword, expected):
+    assert ImageBridge._folder_matches(folder, keyword) is expected
