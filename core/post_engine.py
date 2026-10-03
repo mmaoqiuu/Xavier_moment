@@ -106,6 +106,16 @@ class PostEngine:
             for i, p in enumerate(recent_posts, 1):
                 parts.append(f"{i}. {p}")
 
+        # 今天真实吃了什么（只读三餐插件，抽样命中才出现）
+        meal_topic = materials.get("meal_topic", "")
+        if meal_topic:
+            parts.append(
+                "\n---\n【你今天真实吃了什么】（这是你的真实记录，可以挑其中一顿当话题，"
+                "但不要报菜名、不要罗列菜品、不要写成菜单或美食点评；说感受、气味、"
+                "吃到一半想到的事，或者干脆换个话题，别把整份菜单搬进动态里。）\n"
+                + meal_topic
+            )
+
         parts.append("\n---\n现在请写一条动态。要求：")
         parts.append("- 直接输出内容，不要加任何前缀、标题、解释")
         parts.append("- 如果需要分段，请直接用换行，不要使用 $ 符号或 [NEXT] 等任何特殊分隔符")

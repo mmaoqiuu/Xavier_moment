@@ -1,0 +1,48 @@
+Moment v2.0.2 实现说明 —— 网页图标（v3 素材）替换
+======================================================
+
+一、需求
+  用户提供新图标素材（紫调渐变、虚线圈、白色星芒，源图 800x520 JPEG），
+  要求替换网页图标（收藏夹 favicon 与「添加到主屏幕」图标）。
+
+二、素材处理
+  1. 源图 800x520（非正方形），四周为深色暗角；主体星芒经分析定位于
+     亮度质心 (406, 238)（亮度 >200 的高亮点 bbox 为 x[309,504] y[136,340]）。
+  2. 以该点为中心裁 1:1：边长取受上下边界限制的最大无偏移正方形 476，
+     裁剪框 (168, 0, 644, 476)。
+  3. LANCZOS 缩放产出（pages/timeline/assets/）：
+       icon-180-v3.png / icon-192-v3.png / icon-512-v3.png
+       favicon-32-v3.png / favicon.ico（16/32/48/64 多尺寸）
+     与 v0.13.1 一致：PNG 为不透明 RGB，避免 iOS 合成圆角时露黑边。
+  4. 旧素材（无后缀与 -v2）全部保留，可随时回退。
+
+三、破缓存（沿用 v0.13.1 的结论：必须换文件名，只改内容无效）
+  - pages/timeline/index.html：icon / apple-touch-icon 共 3 处引用改 v3；
+  - core/standalone_server.py：登录页内联 HTML 2 处引用、/apple-touch-icon.png
+    路由指向 icon-180-v3.png；
+  - pages/timeline/assets/manifest.webmanifest：icons 三项（含 maskable）改 v3；
+  - _serve_asset() 的 Cache-Control: no-cache 保持不变。
+
+四、验证要点
+  1. 浏览器标签页图标刷新后为新图（必要时硬刷新 / 清缓存）；
+  2. 手机 Safari 需先删除旧主屏幕图标，再「添加到主屏幕」查看新图标；
+  3. 未登录的登录页图标同样为新图；
+  4. /apple-touch-icon.png、/favicon.ico 两个根路径仍能正常返回图片。
+
+五、AstrBot 面板插件图标（追加）
+  1. 结论：面板图标不走 metadata.yaml，StarManager 在加载插件时按固定文件名
+     os.path.join(plugin_dir_path, "logo.png") 取值，存在则写入 StarMetadata.logo_path，
+     前端用 /api/file/<token> 显示；不存在则显示默认图标。
+  2. 处理：插件根目录新增 logo.png（512x512，同一 1:1 裁剪源，LANCZOS）。
+  3. 生效方式：需重载 / 重启插件（logo_path 在加载阶段确定）。
+  4. 注意：不要把 logo.png 放进 pages/ 或 assets/，必须在插件根目录。
+
+六、v4 素材（按反馈放大，2026-10-03 追加）
+  1. 反馈：紫色图标太小，四周深色暗角太多，要求「几乎填满」画面。
+  2. 量化：源图紫色作品区的亮度 >55 区域为 253x251、中心 (401,240)，即作品本体只有约 252px 见方；
+     首版用的 476px 方块（以星芒质心为中心）把它包在了一大片暗角里。
+  3. 处理：重裁为 238px 方块，裁剪框 (282,121,520,359)，中心 (401,240)，
+     即作品本体每边再收进约 7px（顺带修掉圆角处的深色角），紫色区域基本占满。
+  4. 素材改名为 v4（icon-180/192/512-v4.png、favicon-32-v4.png），favicon.ico 与 logo.png 同源重生成；
+     v3 素材保留可回退；index.html(3 处) / 登录页内联(2 处) + apple-touch-icon 路由 / manifest(3 项) 全部改 v4。
+  5. 若还想更大：可直接把裁剪框再各收进 10~15px；若觉得切到了虚线环，往外放 10px 即可。

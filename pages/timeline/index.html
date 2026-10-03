@@ -6,9 +6,9 @@
     <title>✨ Moment</title>
 
     <!-- 图标与「添加到主屏幕」 -->
-    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32-v2.png">
-    <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192-v2.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="/static/icon-180-v2.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32-v4.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192-v4.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/icon-180-v4.png">
     <link rel="manifest" href="/static/manifest.webmanifest">
     <meta name="theme-color" content="#1d3f66">
     <meta name="mobile-web-app-capable" content="yes">
@@ -118,6 +118,15 @@
 
         .cover-actions button:hover {
             background: rgba(255,255,255,0.35);
+        }
+
+        #refreshBtn.spinning {
+            animation: moment-refresh-spin .8s linear infinite;
+        }
+
+        @keyframes moment-refresh-spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
         }
 
         .notification-badge {
@@ -429,6 +438,11 @@
         .post-time {
             font-size: 12px;
             color: var(--text-muted);
+        }
+
+        .post-time-content {
+            margin-top: 4px;
+            margin-bottom: 10px;
         }
 
         .post-mood {
@@ -1128,6 +1142,7 @@
     <div class="cover-header" id="coverHeader">
         <div class="cover-overlay"></div>
         <div class="cover-actions">
+            <button id="refreshBtn" title="刷新">🔄</button>
             <button id="darkModeBtn" title="切换深色模式">🌙</button>
             <button id="notifBtn" title="通知" style="position:relative">
                 🔔
@@ -1369,6 +1384,27 @@
             document.documentElement.setAttribute('data-theme', currentTheme);
             document.getElementById('darkModeBtn').textContent = currentTheme === 'dark' ? '☀️' : '🌙';
             await saveSettings({ theme: currentTheme });
+        });
+
+        // ==================== Manual Refresh ====================
+        document.getElementById('refreshBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('refreshBtn');
+            if (btn.disabled) return;
+            btn.disabled = true;
+            btn.classList.add('spinning');
+            try {
+                await refreshPosts();
+                await loadNotifications();
+                toast('已刷新');
+            } catch (e) {
+                console.error('刷新失败', e);
+                toast('刷新失败，稍后再试');
+            } finally {
+                setTimeout(() => {
+                    btn.disabled = false;
+                    btn.classList.remove('spinning');
+                }, 500);
+            }
         });
 
         // ==================== Signature Edit ====================
@@ -1674,6 +1710,54 @@
             loadPosts(true);
         });
 
+        /**
+         * 手动刷新：重新拉一遍当前已加载的范围（不跳回第一页）。
+         * 展开过的评论区会重拉一次评论，这样新回复立刻能看到；
+         * 正在输入但还没发出去的草稿、以及正在回复的对象，都会原样还回去。
+         */
+        async function refreshPosts() {
+            const expanded = allPosts.filter(p => p._showComments).map(p => p.id);
+            const drafts = new Map();
+            const replies = new Map();
+            allPosts.forEach(p => {
+                const input = document.getElementById(`comment-input-${p.id}`);
+                if (input && input.value.trim()) drafts.set(p.id, input.value);
+                if (p._replyTo) replies.set(p.id, p._replyTo);
+            });
+
+            const keep = Math.max(PAGE_SIZE, allPosts.length);
+            const data = await apiGet('/posts', { limit: keep, offset: 0 });
+            allPosts = data.posts || [];
+            totalPosts = data.total || 0;
+
+            for (const postId of expanded) {
+                const post = allPosts.find(p => p.id === postId);
+                if (!post) continue;
+                post._showComments = true;
+                post._replyTo = null;
+                try {
+                    const c = await apiGet('/comments', { post_id: postId });
+                    post.comments = c.comments || [];
+                } catch (e) {
+                    console.warn('刷新评论失败', e);
+                    post.comments = post.comments || [];
+                }
+            }
+
+            renderPosts();
+            updateLoadMore();
+
+            // 回复对象还在就把回复状态还原，草稿也塞回输入框
+            for (const [postId, commentId] of replies) {
+                const post = allPosts.find(p => p.id === postId);
+                if (findComment(post, commentId)) startReply(postId, commentId);
+            }
+            for (const [postId, text] of drafts) {
+                const input = document.getElementById(`comment-input-${postId}`);
+                if (input) input.value = text;
+            }
+        }
+
         // ==================== Render Posts ====================
         function renderPosts() {
             const area = document.getElementById('postsArea');
@@ -1692,7 +1776,8 @@
         function renderPostCard(post) {
             const isAI = post.author === 'ai';
             const authorName = isAI ? appConfig.ai_name : appConfig.user_name;
-            const mood = post.mood ? `<span class="post-mood">${post.mood}</span>` : '';
+            // 心情标签只留给自己发的动态：他发的帖子不显示，更贴近朋友圈
+            const mood = !isAI && post.mood ? `<span class="post-mood">${post.mood}</span>` : '';
             const imagesHtml = renderPostImages(post.images);
             const reactionsHtml = renderReactions(post);
             const commentsHtml = renderComments(post);
@@ -1705,12 +1790,12 @@
                     <div class="post-header">
                         <div class="post-meta">
                             <div class="post-author">${escapeHtml(authorName)}</div>
-                            <div class="post-time">${formatTime(post.created_at)}</div>
                         </div>
                         ${mood}
                     </div>
                     <div class="post-content">${escapeHtml(post.content)}</div>
                     ${imagesHtml}
+                    <div class="post-time post-time-content">${formatTime(post.created_at, true)}</div>
                     ${reactionsHtml}
                     ${likeLineHtml}
                     <div class="post-actions">
@@ -1981,11 +2066,22 @@
             return div.innerHTML;
         }
 
-        function formatTime(ts) {
+        function pad2(num) {
+            return String(num).padStart(2, '0');
+        }
+
+        // forPost = true 时是朋友圈动态：超过 1 小时就显示 YYMMDD HH:MM发布，不出现"x天前"
+        function formatTime(ts, forPost = false) {
             if (!ts) return '';
             const date = new Date(ts.includes('T') ? ts : ts.replace(' ', 'T'));
             const now = new Date();
             const diff = (now - date) / 1000;
+
+            const hhmm = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+            // 朋友圈动态：超过 1 小时就显示「2026年6月20日 23:25」，不出现"x小时前 / x天前"
+            if (forPost && diff >= 3600) {
+                return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${hhmm}`;
+            }
 
             if (diff < 60) return '刚刚';
             if (diff < 3600) return Math.floor(diff / 60) + '分钟前';
@@ -1993,11 +2089,9 @@
             if (diff < 604800) return Math.floor(diff / 86400) + '天前';
 
             const y = date.getFullYear();
-            const m = String(date.getMonth() + 1).padStart(2, '0');
-            const d = String(date.getDate()).padStart(2, '0');
-            const h = String(date.getHours()).padStart(2, '0');
-            const min = String(date.getMinutes()).padStart(2, '0');
-            return y === now.getFullYear() ? `${m}-${d} ${h}:${min}` : `${y}-${m}-${d}`;
+            const m = pad2(date.getMonth() + 1);
+            const dd = pad2(date.getDate());
+            return y === now.getFullYear() ? `${m}-${dd} ${hhmm}` : `${y}-${m}-${dd}`;
         }
     </script>
 </body>

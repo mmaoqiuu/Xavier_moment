@@ -20,6 +20,7 @@ from astrbot.core.config.astrbot_config import AstrBotConfig
 
 from .storage.db import MomentDatabase
 from .core.chat_bridge import ChatBridge
+from .core.comment_digest import build_digest_text
 from .core.like_engine import LikeEngine
 from .core.material import MaterialCollector
 from .core.npc_comment_guard import NpcCommentGuard
@@ -28,6 +29,8 @@ from .core.post_engine import PostEngine
 from .core.scheduler import Scheduler, decode_schedule, encode_schedule
 from .core.standalone_server import MomentServer
 from .core.image_bridge import ImageBridge
+from .core.life_bridge import LifeBridge
+from .core.meal_bridge import MealBridge
 
 PLUGIN_NAME = "astrbot_plugin_xavier_moment"
 
@@ -36,7 +39,7 @@ PLUGIN_NAME = "astrbot_plugin_xavier_moment"
     PLUGIN_NAME,
     "YuanYuan",
     "让 AI 和你都能发布动态、互相评论，像真实朋友一样分享日常生活。",
-    "v0.6.0",
+    "v2.0.2",
     "https://github.com/mmaoqiuu/Xavier_moment",
 )
 class MomentPlugin(Star):
@@ -62,11 +65,20 @@ class MomentPlugin(Star):
         self.like_engine: LikeEngine | None = None
         self.chat_bridge: ChatBridge | None = None
         self.image_bridge: ImageBridge | None = None
+        self.life_bridge: LifeBridge | None = None
+        self.meal_bridge: MealBridge | None = None
 
         # 延迟任务池：本次运行里挂起的 asyncio 定时器，插件卸载时统一取消。
         # 取消只影响「本次运行还跑不跑得到」，事情本身已经落进 jobs 表，
         # 下次启动会按原计划续跑，所以重载不会把「该发生的评论/回复」一起吞掉。
         self._tasks: set[asyncio.Task] = set()
+
+        # 对话触发发帖的节流：session_id -> 最近一次发帖时间（loop 时钟）
+        self._chat_post_times: dict[str, float] = {}
+        self._chat_post_lock = asyncio.Lock()
+
+        # 评论区回灌队列的读写锁：延迟任务和 hook 都可能来动这个队列
+        self._digest_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -80,8 +92,14 @@ class MomentPlugin(Star):
             await self.db.connect()
             logger.info(f"[moment] 数据库就绪: {self.db_path}")
 
+            # 只读桥：life_state（对齐他此刻在做什么）、三餐菜单（偶尔当发帖话题）
+            self.life_bridge = LifeBridge(self.data_dir.parent / "xavier_life_state", db=self.db)
+            self.meal_bridge = MealBridge(self.config, self.data_dir, db=self.db)
+
             # 素材收集器
-            self.material = MaterialCollector(self.context, self.config)
+            self.material = MaterialCollector(
+                self.context, self.config, meal_bridge=self.meal_bridge
+            )
 
             # 发帖引擎
             self.post_engine = PostEngine(self.context, self.config)
@@ -270,6 +288,7 @@ class MomentPlugin(Star):
         "npc_like": "_job_npc_like",
         "ai_reply_npc": "_job_ai_reply_npc",
         "npc_like_catchup": "_job_npc_like_catchup",
+        "comment_digest": "_job_comment_digest",
     }
 
     def _schedule_job(
@@ -532,19 +551,334 @@ class MomentPlugin(Star):
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
-        """只做一件事：记住最近一次私聊的会话，供朋友圈侧取上下文用。
+        """两件事：记住最近一次会话；顺手把「评论区发生过什么」静默注入一次。
 
-        这里不往 prompt 里写任何东西，所以不产生 token 开销。
+        注入只改本轮请求，AstrBot 不会把这段写回历史，所以他不会重复提。
         """
         if not await self._is_session_enabled(event):
             return
-        if not self.chat_bridge:
+
+        session = ""
+        if self.chat_bridge:
+            try:
+                session = getattr(event, "unified_msg_origin", "") or event.get_session_id()
+                await self.chat_bridge.remember_session(session)
+            except Exception:
+                logger.exception("[moment] 记录私聊会话失败")
+
+        # 评论区回灌：静默的，他知道就好，不专门开口汇报
+        try:
+            await self._inject_comment_digest(event, req, session)
+        except Exception:
+            logger.exception("[moment] 注入评论区摘要失败")
+
+    # ------------------------------------------------------------------
+    # 评论区回灌：评论链跑完后，静默告诉他评论区发生过什么
+    # ------------------------------------------------------------------
+
+    _DIGEST_QUEUE_KEY = "comment_digest_pending"
+    _DIGEST_JOB_KINDS = ("npc_comment", "npc_reply", "ai_reply_npc")
+    _DIGEST_MAX_RETRY = 3
+
+    @staticmethod
+    def _config_true(config: dict, name: str, default: bool = True) -> bool:
+        """读一个布尔开关，字符串写的 false/0/no/off 也算关。"""
+        value = config.get(name, default)
+        if isinstance(value, str):
+            return value.strip().lower() not in ("false", "0", "no", "off", "")
+        return bool(value)
+
+    def _digest_enabled(self) -> bool:
+        return self._config_true(self.config, "comment_digest_enabled", True)
+
+    def _trigger_comment_digest(self, post_id: int, attempts: int = 0) -> None:
+        """评论落库后调一次：过一会儿再看这条动态的评论区是不是彻底安静了。"""
+        if not self._digest_enabled() or not self.db or not post_id:
             return
         try:
-            session = getattr(event, "unified_msg_origin", "") or event.get_session_id()
-            await self.chat_bridge.remember_session(session)
+            delay = self._int_config("comment_digest_delay_seconds", 60, minimum=0)
+            self._schedule_job(
+                "comment_digest",
+                {"post_id": int(post_id), "attempts": int(attempts)},
+                float(delay),
+                dedup_key=f"comment_digest:{int(post_id)}:{int(attempts)}",
+                post_id=int(post_id),
+            )
         except Exception:
-            logger.exception("[moment] 记录私聊会话失败")
+            logger.exception("[moment] 安排评论区回灌检查失败")
+
+    async def _job_comment_digest(self, payload: dict) -> None:
+        """延迟任务：还有人在评论区排队就再等等；安静了就把摘要收进待注入队列。"""
+        if not self.db or not self._digest_enabled():
+            return
+        post_id = int(payload.get("post_id") or 0)
+        attempts = int(payload.get("attempts") or 0)
+        if not post_id:
+            return
+
+        for kind in self._DIGEST_JOB_KINDS:
+            try:
+                pending = await self.db.count_pending_jobs(kind=kind, post_id=post_id)
+            except Exception:
+                logger.exception("[moment] 查询评论区待办数量失败，按安静处理")
+                pending = 0
+            if pending <= 0:
+                continue
+            if attempts >= self._DIGEST_MAX_RETRY:
+                logger.info(f"[moment] 帖子 #{post_id} 评论区一直没收尾，这轮不回灌")
+                return
+            self._trigger_comment_digest(post_id, attempts + 1)
+            return
+
+        await self._queue_comment_digest(post_id)
+
+    async def _build_comment_digest(self, post_id: int) -> str | None:
+        """拼摘要；评论区没别人的话、或读库失败时返回 None。"""
+        if not self.db:
+            return None
+        try:
+            post = await self.db.get_post(post_id)
+            if not post:
+                return None
+            comments = await self.db.get_comments(post_id)
+        except Exception:
+            logger.exception("[moment] 读取评论区失败")
+            return None
+        max_comments = self._int_config("comment_digest_max_comments", 5, minimum=1)
+        return build_digest_text(post, list(comments or []), max_comments=max_comments)
+
+    async def _queue_comment_digest(self, post_id: int) -> None:
+        """摘要入队：同一动态只留最新的一份，过期的直接扔。"""
+        text = await self._build_comment_digest(post_id)
+        if not text:
+            logger.info(f"[moment] 帖子 #{post_id} 没有值得回灌的评论，跳过")
+            return
+        now = datetime.now()
+        ttl = self._int_config("comment_digest_ttl_hours", 3, minimum=1) * 3600
+        limit = max(1, self._int_config("comment_digest_max_queue", 3, minimum=1))
+        async with self._digest_lock:
+            queue = await self._load_digest_queue()
+            queue = [i for i in queue if int(i.get("post_id") or 0) != int(post_id)]
+            queue = [
+                i for i in queue
+                if now.timestamp() - float(i.get("queued_ts") or 0.0) <= ttl
+            ]
+            queue.append(
+                {"post_id": int(post_id), "queued_ts": now.timestamp(), "text": text}
+            )
+            await self._save_digest_queue(queue[-limit:])
+        logger.info(
+            f"[moment] 评论区摘要已入队（帖子 #{post_id}），等他在私聊里开口时静默注入"
+        )
+
+    async def _load_digest_queue(self) -> list[dict]:
+        if not self.db:
+            return []
+        try:
+            raw = await self.db.get_setting(self._DIGEST_QUEUE_KEY, "")
+            data = json.loads(raw) if raw else []
+        except Exception:
+            logger.exception("[moment] 读取回灌队列失败")
+            return []
+        if not isinstance(data, list):
+            return []
+        return [i for i in data if isinstance(i, dict)]
+
+    async def _save_digest_queue(self, queue: list[dict]) -> None:
+        if not self.db:
+            return
+        await self.db.set_setting(
+            self._DIGEST_QUEUE_KEY, json.dumps(queue, ensure_ascii=False)
+        )
+
+    @staticmethod
+    def _is_private_event(event) -> bool:
+        """只有私聊才念评论区；判断不出来按私聊处理，免得功能直接哑掉。"""
+        try:
+            message_type = getattr(event, "message_type", None)
+            name = getattr(message_type, "name", str(message_type)).upper()
+            if "GROUP" in name:
+                return False
+            if "FRIEND" in name or "PRIVATE" in name:
+                return True
+            session = getattr(event, "unified_msg_origin", "") or event.get_session_id()
+            return "FriendMessage" in str(session)
+        except Exception:
+            return True
+
+    async def _inject_comment_digest(self, event, req, session: str) -> None:
+        """取队首一条摘要拼进本轮 system_prompt：先出队落库，再注入。"""
+        if not self.db or not self._digest_enabled():
+            return
+        if self._config_true(self.config, "comment_digest_only_private", True):
+            if not self._is_private_event(event):
+                return
+
+        # 配了固定私聊会话时，只有那个会话有资格消费队列
+        if session and self.chat_bridge:
+            try:
+                target = await self.chat_bridge.resolve_session()
+                if target and target != session:
+                    return
+            except Exception:
+                logger.exception("[moment] 比对回灌会话失败，按可注入处理")
+
+        now = datetime.now()
+        ttl = self._int_config("comment_digest_ttl_hours", 3, minimum=1) * 3600
+        async with self._digest_lock:
+            queue = await self._load_digest_queue()
+            picked: dict | None = None
+            rest: list[dict] = []
+            for item in queue:
+                age = now.timestamp() - float(item.get("queued_ts") or 0.0)
+                if age > ttl:
+                    continue  # 过期了，不再提
+                if picked is None:
+                    picked = item
+                else:
+                    rest.append(item)
+            if picked is None:
+                if len(rest) != len(queue):
+                    await self._save_digest_queue(rest)
+                return
+            await self._save_digest_queue(rest)
+
+        block = await self._compose_digest_block(str(picked.get("text") or ""), now)
+        if not block:
+            return
+        base = getattr(req, "system_prompt", "") or ""
+        req.system_prompt = (base + "\n\n" + block) if base else block
+        logger.info("[moment] 已静默注入评论区摘要（帖子 #%s）", picked.get("post_id"))
+
+    async def _compose_digest_block(self, digest_text: str, now: datetime) -> str:
+        """组装注入块；life_state 对不齐或还在冷却内，就只注入评论区那部分。"""
+        if not digest_text.strip():
+            return ""
+        lines = ["【你不在私聊里发生的事】", digest_text]
+        life_line = ""
+        if self.life_bridge is not None:
+            try:
+                life_line = (
+                    await self.life_bridge.current_line_throttled(
+                        self._int_config("life_align_cooldown_minutes", 60, minimum=0),
+                        now,
+                    )
+                ).strip()
+            except Exception:
+                logger.exception("[moment] 读 life_state 失败，跳过生活状态对齐")
+                life_line = ""
+        if life_line:
+            lines.append(life_line)
+        lines.append(
+            "以上都是朋友圈里的事（不是私聊）。你现在正在和她私聊：可以自然地带到，"
+            "没合适的时机就当作刚看过手机、不必专门汇报。"
+            "【你此刻的状态】那行只是背景：用来自查别和他当下的作息打架（别把没做的事说成做了），"
+            "不要主动拿它当聊天话题、也不要汇报行程。"
+            "不要复述这段说明，也别假装刚才在私聊里聊过这些。"
+        )
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # LLM 工具：在对话里被要求时，立刻发一条动态
+    # ------------------------------------------------------------------
+
+    @filter.llm_tool(name="post_moment")
+    async def post_moment(
+        self,
+        event: AstrMessageEvent,
+        content: str = "",
+        with_image: bool = False,
+    ) -> str:
+        """在用户要求时，立刻发布一条朋友圈动态。
+
+        Args:
+            content(string): 这次动态想写的内容或话题；留空则由你自己决定发什么。
+            with_image(boolean): 是否一定要配一张图；默认按插件配置的概率决定。
+        """
+        if not await self._is_session_enabled(event):
+            return "当前会话未启用朋友圈插件，无法发布动态。"
+
+        if not self.config.get("chat_post_enabled", True):
+            return "用户关闭了「对话里直接发动态」的开关，请提醒他去插件配置里打开 chat_post_enabled。"
+
+        if not self.db or not self.post_engine or not self.material:
+            return "朋友圈还没初始化完成，这次暂时发不了。"
+
+        session = getattr(event, "unified_msg_origin", "") or event.get_session_id()
+        cooldown = self._int_config("chat_post_cooldown_seconds", 90, minimum=0)
+        try:
+            now = asyncio.get_running_loop().time()
+        except RuntimeError:
+            now = 0.0
+
+        # 节流：避免模型连环调用把朋友圈刷屏
+        async with self._chat_post_lock:
+            last = self._chat_post_times.get(session, 0.0)
+            if cooldown > 0 and last and now - last < cooldown:
+                wait = int(cooldown - (now - last)) + 1
+                return f"刚刚才发过一条，{wait} 秒之后再发比较自然，现在先别发。"
+            self._chat_post_times[session] = now
+
+        try:
+            chat_context = await self._chat_context()
+            hint_parts = []
+            if chat_context:
+                hint_parts.append(chat_context)
+            brief = (content or "").strip()
+            hint = "【本次动态是他在私聊中受用户所托而发】"
+            if brief:
+                hint += f"用户希望表达的内容/话题：「{brief}」。"
+            hint += "请把它写成一条自然的朋友圈动态：保持你的语气，不要写成对话回复，不要复述用户的措辞。"
+            hint_parts.append(hint)
+
+            materials = await self.material.collect(db_instance=self.db)
+            result = await self.post_engine.generate_post(
+                materials, extra_context=chr(10).join(hint_parts)
+            )
+            if not result:
+                if not brief:
+                    logger.warning("[moment] 对话触发发帖：生成失败（无内容要点），本次跳过")
+                    return "这次没能写出合适的动态，等一会儿再让我发。"
+                logger.warning("[moment] 对话触发发帖：生成失败，退回用户要点原文")
+                result = {"content": brief, "mood": ""}
+
+            images = ""
+            if self.image_bridge:
+                images = await self.image_bridge.try_generate_for_post(
+                    result["content"], result.get("mood", "")
+                )
+                if with_image and not images:
+                    logger.info("[moment] 对话触发发帖：用户想要配图，但这次没出图，按纯文字发布")
+
+            post = await self.db.create_post(
+                author="ai",
+                content=result["content"],
+                mood=result.get("mood", ""),
+                source_hint="chat_request",
+                images=images,
+            )
+            logger.info(
+                f"[moment] 应私聊要求发布了动态 #{post['id']}: {result['content'][:30]}..."
+            )
+
+            if self.config.get("notify_on_ai_post", True):
+                await self._send_notification(
+                    f"📢 您关注的用户发布了一条新动态：" + chr(10) + chr(10) + f"「{result['content'][:100]}」",
+                    post_id=post["id"],
+                    ntype="new_post",
+                )
+
+            self._trigger_npc_comments(post["id"])
+            await self._trigger_likes(post["id"], "ai")
+
+            tail = "（带图）" if images else "（纯文字）"
+            return (
+                f"动态已发布{tail}，ID={post['id']}，正文：{result['content']}" + chr(10)
+                + "接下来用你自己的语气跟用户说一句就好，不要复述这条系统信息。"
+            )
+        except Exception:
+            logger.exception("[moment] 对话触发的发帖失败")
+            return "发动态的时候出了点问题，这次没发出去，稍后再试。"
 
     # ------------------------------------------------------------------
     # AI 触发接口（供 server 调用）
@@ -937,6 +1271,9 @@ class MomentPlugin(Star):
                     post_id=post_id,
                 )
 
+            # 评论落了库：也许这就是这条动态的最后一条，安排一次回灌检查
+            self._trigger_comment_digest(post_id)
+
         except Exception:
             logger.exception(f"[moment] NPC {npc_name} 评论失败")
 
@@ -998,6 +1335,7 @@ class MomentPlugin(Star):
             )
             await self.db.set_setting(f"npc_last_comment_{npc['name']}", datetime.now().isoformat())
             logger.info(f"[moment] {npc['name']} 回复了评论 #{target_comment_id}: {data['content'][:30]}...")
+            self._trigger_comment_digest(post_id)
 
         except Exception:
             logger.exception("[moment] NPC 接话失败")
@@ -1034,8 +1372,8 @@ class MomentPlugin(Star):
         if not self.db or not self.material or not self.post_engine:
             return
 
-        # 1. 收集素材
-        materials = await self.material.collect(db_instance=self.db)
+        # 1. 收集素材（主动发帖可以拿三餐当话题）
+        materials = await self.material.collect(db_instance=self.db, allow_meal=True)
 
         # 2. 生成动态
         # 带上最近的私聊，避免和刚在私聊里说过的话打架
@@ -1236,6 +1574,8 @@ class MomentPlugin(Star):
                 parent_comment_id=npc_comment["id"],
             )
             logger.info(f"[moment] AI 回复了 {npc_name} 的评论 #{npc_comment['id']}: {reply_text[:30]}...")
+            # 他自己也说完了，再查一次评论区是否安静了
+            self._trigger_comment_digest(post_id)
 
             if self.config.get("notify_on_new_comment", True):
                 await self._send_notification(

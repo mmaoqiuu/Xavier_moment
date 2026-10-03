@@ -113,6 +113,10 @@ class ChatBridge:
         except Exception:
             logger.exception("[moment] 记录私聊会话失败")
 
+    async def resolve_session(self) -> str:
+        """对外只读接口：当前取上下文用的会话（评论区回灌要拿它比对）。"""
+        return await self._resolve_session()
+
     async def _resolve_session(self) -> str:
         session = str(self.config.get("chat_bridge_session", "") or "").strip()
         if session:

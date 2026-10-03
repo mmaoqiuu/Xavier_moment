@@ -165,8 +165,8 @@ class MomentServer:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Moment - 登录</title>
-<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32-v2.png">
-<link rel="apple-touch-icon" sizes="180x180" href="/static/icon-180-v2.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32-v4.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/icon-180-v4.png">
 <meta name="theme-color" content="#1d3f66">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -231,7 +231,7 @@ async function doLogin() {
 
     async def _handle_apple_touch_icon(self, request: web.Request) -> web.Response:
         """返回 iOS 主屏幕图标。用 180x180 那份，是 iOS 的推荐尺寸。"""
-        return self._serve_asset("icon-180-v2.png", "image/png")
+        return self._serve_asset("icon-180-v4.png", "image/png")
 
     async def _handle_favicon(self, request: web.Request) -> web.Response:
         """返回 favicon.ico。名字由调用方写死，不接受外部传入。"""

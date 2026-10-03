@@ -19,9 +19,11 @@ class MaterialCollector:
     # 人设缓存有效期（秒）
     _PERSONA_CACHE_TTL = 60
 
-    def __init__(self, context, config: dict):
+    def __init__(self, context, config: dict, meal_bridge=None):
         self.context = context
         self.config = config
+        # 三餐桥（只读 xavier_daily_meal 的菜单，按概率给个发帖话题）；可为 None
+        self.meal_bridge = meal_bridge
         # 人设解析缓存，避免每次发帖/评论都读盘开库
         self._persona_cache: str | None = None
         self._persona_cache_at: float = 0.0
@@ -35,11 +37,13 @@ class MaterialCollector:
         self._persona_cache = None
         self._persona_cache_at = 0.0
 
-    async def collect(self, db_instance=None) -> dict:
+    async def collect(self, db_instance=None, allow_meal: bool = False) -> dict:
         """收集所有可用素材，返回一个字典供 LLM 参考。
 
         Args:
             db_instance: 数据库实例 (MomentDatabase)，用于获取历史记录等
+            allow_meal: 是否允许本次带上三餐话题（只在他自己主动发帖时为 True；
+                被要求发帖时不该插一句「我今天吃了啥」）
 
         Returns:
             {
@@ -47,6 +51,7 @@ class MaterialCollector:
                 "current_time": str,       # 当前时间信息
                 "recent_posts": [],        # 近期发帖记录，用于防重复
                 "topic": str,              # 随机抽取的发帖主题
+                "meal_topic": str,         # 可选：今天/昨天的某一餐（抽样命中才有）
             }
         """
         import datetime
@@ -93,6 +98,15 @@ class MaterialCollector:
 
         # 1. 读取人设 (system_prompt)
         result["persona"] = await self._get_persona()
+
+        # 2. 三餐话题（只读本地菜单，抽样命中才有；失败不影响发帖）
+        if allow_meal and self.meal_bridge is not None:
+            try:
+                meal_topic = await self.meal_bridge.maybe_topic()
+                if meal_topic:
+                    result["meal_topic"] = meal_topic
+            except Exception:
+                logger.exception("[moment] 取三餐话题失败，本次不带")
 
         return result
 

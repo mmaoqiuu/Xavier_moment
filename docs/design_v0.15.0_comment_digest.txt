@@ -1,0 +1,113 @@
+设计文档 v0.15.0 — 评论区回灌私聊（NPC 最后一条之后，只注入一次）
+插件：astrbot_plugin_xavier_moment
+日期：2026-10-01
+状态：待用户确认（确认前不改代码）
+
+一、需求
+
+一条动态的 NPC 评论链彻底跑完之后，把这件事带回私聊：让他"知道"
+评论区发生了什么（谁来过、说了什么、他自己接过什么话）。
+要求：每条动态只注入一次，不重复提；不影响私聊本身的语气。
+（不采用"他主动发消息告诉你"的形式，是静默注入，他知道但不专门宣报。）
+
+二、现状（为什么现在不知道）
+
+- NPC 评论走延迟任务：npc_batch → npc_comment →（概率）ai_reply_npc / npc_reply。
+- 这些延迟任务跑完就结束了，没有任何回写私聊的通道。
+- 唯一的桥是 core/chat_bridge.py，方向是"私聊 → 朋友圈"（发帖前看一眼私聊），
+  反过来没有；所以他发完动态后对评论区一无所知。
+
+三、设计
+
+1. 链尾判定
+   在三个"评论落库后"的位置各挂一次检查：
+   - main.py::_do_npc_comment_impl（NPC 主评论落库后）
+   - main.py::_do_npc_reply（NPC 接话落库后）
+   - main.py::_do_ai_reply_npc（他自己回 NPC 落库后）
+   判定条件：该 post 下 count_pending_jobs(npc_comment / npc_reply / ai_reply_npc) 全为 0。
+   为避免"落库顺序比排期快"的误判，不立刻判定，而是排一个延迟任务：
+   kind="comment_digest"，延迟 comment_digest_delay_seconds（默认 60 秒）。
+   该任务醒来后再查一次 pending：若还有待办，就再等一轮（最多重排 3 次），
+   仍不结束则放弃本轮（宁可不注入，也不注入半截评论）。
+
+2. 待注入队列（storage/db.py 不新增表）
+   复用 settings 表，键 comment_digest_pending，值为 JSON 数组：
+   [{"post_id": 12, "queued_at": "2026-10-01T23:50:00"}, ...]
+   - 入队时按 post_id 去重（同一条动态最多一条待注入）
+   - 入队前生成摘要文本，避免注入时再查一次库、也避免内容随后被改
+     摘要直接随队列入队：{"post_id": 12, "queued_at": ..., "text": "..."}
+   - 读写用 asyncio.Lock 串行化，读改写不互相覆盖
+   - 队列上限 comment_digest_max_queue（默认 3），超了丢最旧的
+   - 过期：queued_at 超过 comment_digest_ttl_hours（默认 3 小时）直接丢弃
+     （拖太久就不提了，免得翻旧账）
+
+3. 摘要内容（谁被写进去）
+   参考 main.py::_do_ai_reply_npc 已有的评论渲染思路，格式：
+   【朋友圈 · 你在 <时间> 发了「<正文前 40 字>」】
+   - <NPC 名>：<评论前 60 字>
+   - <NPC 名> 回复 <某人>：<内容>
+   - 你回了一句：<内容>
+   排除项：用户自己的评论（她本来就知道自己说了什么）。
+   条数上限 comment_digest_max_comments（默认 5，取最新几条）。
+
+4. 注入时机与形式（main.py::on_llm_request）
+   该 Hook 现在已经存在（只记会话，不写 prompt），本轮在其末尾加一段：
+   - 第一行仍然是 _is_session_enabled(event) 判断，禁用会话完全不执行
+   - 取队首一条；判定当前会话就是私聊会话（与 _resolve_session() 比对），
+     不是私聊就把队列原样留着，等下次私聊再说
+   - 先移除队列项、落库，再拼进 req.system_prompt 末尾 ——
+     顺序反过来的话，注入成功但进程崩溃会变成每轮重复注入
+   - 内容块（临时状态，只在本轮请求生效）：
+     「【你不在私聊里发生的事】你刚在朋友圈发过一条动态，评论区有人来过了：
+      ……以上是朋友圈里发生的事。你现在正在和她私聊，
+      可以自然地带到，但不要复述这段系统说明，也不要假装刚才在私聊里聊过这些。」
+   - 本轮结束后 AstrBot 不会把这段写回历史，所以天然只出现一次
+
+5. 配置（_conf_schema.json，新增 5 项）
+   - comment_digest_enabled：bool，默认 true。评论区回灌开关。
+   - comment_digest_delay_seconds：int，默认 60。链尾等待，给还在路上的评论留时间。
+   - comment_digest_max_comments：int，默认 5。摘要里最多写几条评论。
+   - comment_digest_ttl_hours：int，默认 3。超过就丢掉不再注入。
+   - comment_digest_max_queue：int，默认 3。待注入队列上限。
+  - life_align_cooldown_minutes：int，默认 60。life_state 只作「别和他当下作息打架」的背景，
+    不是话题来源：这么久最多随摘要附一次（0 = 每次都附），发帖链路上完全不读 life_state。
+
+6. 涉及文件
+   - main.py：_trigger_npc_comments 处挂 comment_digest 延迟任务；
+     _do_npc_comment_impl / _do_npc_reply / _do_ai_reply_npc 末尾各调用一次判定；
+     新增 _queue_comment_digest / _build_comment_digest / _pop_comment_digest；
+     on_llm_request 增加注入段；_JOB_HANDLERS 增加 comment_digest。
+   - storage/db.py：不动（复用 settings）。
+   - _conf_schema.json、metadata.yaml（v0.14.0 → v0.15.0）、CHANGELOG.md。
+
+四、验收
+
+1. 在私聊里发一条动态（对话触发），等 NPC 评论陆续出现。
+2. 最后一位 NPC 评论落库约 1 分钟后，在私聊里随便说句话。
+3. 他的回应里应体现"知道有人在评论区来过"，且是自然语气，不念系统信息。
+4. 再隔几轮对话，不应重复提及同一批评论（只注入一次）。
+5. 关掉 comment_digest_enabled 后，行为与本版之前完全一致。
+6. 会话被禁用的会话里钩子静默，队列表不出、不消费。
+
+五、风险与边界
+
+- 注释链中途插件重载：待办会被 _resume_jobs 接回来，链尾判定依旧在最后一条落库后触发。
+- NPC 评论额度被后续对话触发的新评论续上：延迟任务最多重排 3 次，之后放弃本轮注入（不注入半截）。
+- 注入只改本轮 req，不写数据库历史，因此不会污染私聊记录。
+
+六、版本
+
+新功能 → minor：v0.14.0 → v0.15.0。
+
+七、待你确认的两个点
+
+1. 注入形式默认是"静默注入"（他知道，但不主动开口提）。
+   若你想要的是"他顺手在私聊里提一嘴"，注入语要改成建议式，请说明。
+2. 摘要默认不包含用户自己的评论，只含 NPC 的话与他自己的回复。
+
+
+
+【开发后补充 2026-10-01】
+* 真机核对：life_state.json 的 timeline 时间是中文时段（上午/中午/下午/晚上），已改为兼容中文时段与 HH:MM 两种写法。
+* 已确认对齐失败路径：文件不存在 / date 不是今天 / 日程未开始 / 解析失败 → 整段跳过，只注入评论区摘要。
+* 离线自测见 tests/test_v015_bridges.py（18 项 PASS），三餐话题设计见 docs/design_v0.15.0_meal_topic.txt。

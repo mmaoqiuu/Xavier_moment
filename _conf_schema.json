@@ -436,5 +436,110 @@
     "condition": {
       "advanced_mode": true
     }
+  },
+  "chat_post_enabled": {
+    "description": "允许他在对话里被要求后发动态",
+    "type": "bool",
+    "hint": "开启后，你在聊天里说「帮我发条朋友圈」之类，他会真的发一条到朋友圈（网页时间线立刻能看到），并且这条动态同样会有 NPC 来评论、有人点赞。关闭后他只会在聊天里口头答应，不会落库。",
+    "default": true
+  },
+  "chat_post_cooldown_seconds": {
+    "description": "对话发帖最短间隔（秒）",
+    "type": "int",
+    "hint": "同一个会话里，两次「被你要求发动态」之间至少隔这么久，防止模型连续调用把朋友圈刷屏。设 0 表示不限制（不建议）。",
+    "default": 90,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "comment_digest_enabled": {
+    "description": "评论区回灌私聊（他知道评论区发生过什么）",
+    "type": "bool",
+    "hint": "一条动态的 NPC 评论链跑完后，把「谁来过、说了什么、他接过什么话」静默注入他下一次回复里。他只在本轮请求里知道，不会重复提；关掉则完全按老样子，评论区的事不带回私聊。",
+    "default": true
+  },
+  "comment_digest_only_private": {
+    "description": "只在私聊里回灌评论区",
+    "type": "bool",
+    "hint": "群聊里念朋友圈评论会很怪，默认只在私聊注入。关掉后任何会话都可能被注入。",
+    "default": true,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "comment_digest_delay_seconds": {
+    "description": "回灌等待（秒）",
+    "type": "int",
+    "hint": "最后一条评论落库后等这么久，确认没有后续评论/接话再注入。太小会把半截评论区念给他，太大则他半天不知道有人来过。",
+    "default": 60,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "comment_digest_max_comments": {
+    "description": "摘要里最多写几条评论",
+    "type": "int",
+    "hint": "取最新的几条。太长像念清单，5 条左右比较自然。",
+    "default": 5,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "comment_digest_ttl_hours": {
+    "description": "摘要有效期（小时）",
+    "type": "int",
+    "hint": "超过这个时长的评论区内容不再注入（默认 3 小时）：拖太久就不提了，免得翻旧账。",
+    "default": 3,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "comment_digest_max_queue": {
+    "description": "待注入摘要条数上限",
+    "type": "int",
+    "hint": "同时攒着几条动态的评论区。超出后只保留最新的几条。",
+    "default": 3,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "life_align_cooldown_minutes": {
+    "description": "生活状态附加冷却（分钟）",
+    "type": "int",
+    "hint": "life_state 只作「别和他当下作息打架」的背景，不是话题：这么久最多随评论摘要附一次。0 = 每次回灌都附。",
+    "default": 60,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "meal_topic_enabled": {
+    "description": "把三餐当朋友圈话题",
+    "type": "bool",
+    "hint": "读「兔吃了么」插件里今天真实的菜单，偶尔作为他自己发动态时的话题（只读，不写对方数据）。关掉则他发帖时永远不提吃。",
+    "default": true
+  },
+  "meal_topic_ratio": {
+    "description": "提吃的概率",
+    "type": "float",
+    "hint": "每次主动发帖抽中早饭/午饭/晚饭话题的概率，默认 0.1（十次里约一次）。设 1 表示每次都提（容易腻）。",
+    "default": 0.1
+  },
+  "meal_topic_cooldown_hours": {
+    "description": "提吃的冷却（小时）",
+    "type": "int",
+    "hint": "提过一次之后，这么久不再把三餐当话题，免得连着几条动态都在讲吃的。",
+    "default": 12,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "meal_topic_data_dir": {
+    "description": "三餐插件数据目录（留空自动找）",
+    "type": "string",
+    "hint": "默认自动定位 data/plugin_data/xavier_daily_meal/history.json。换了目录名或想手动指定时填这里。",
+    "default": "",
+    "condition": {
+      "advanced_mode": true
+    }
   }
 }

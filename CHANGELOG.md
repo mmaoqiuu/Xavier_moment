@@ -1,5 +1,53 @@
 # 更新日志
 
+## v2.0.2
+### 修改（网页图标：收藏夹图标 / 添加到主屏幕图标替换为新素材）
+- 按用户提供的新图（紫调渐变 + 虚线圈 + 白色星芒，源图 800x520 JPEG）重新生成素材：
+  以画⾯主体（星芒亮度质心 (406,238)）为中心裁成 1:1 的 476x476（裁剪框 `(168,0,644,476)`），
+  LANCZOS 缩放产出 `icon-180-v3.png` / `icon-192-v3.png` / `icon-512-v3.png` /
+  `favicon-32-v3.png` 与多尺寸 `favicon.ico`（16/32/48/64），PNG 为不透明 RGB。
+  旧素材（无后缀与 -v2）保留在 assets 内，可随时回退。
+- 破缓存：沿用 v0.13.1 的换名策略，`pages/timeline/index.html`（3 处）、
+  登录页内联 HTML 与 `/apple-touch-icon.png` 路由（`core/standalone_server.py`）、
+  `manifest.webmanifest`（含 maskable 一项）全部改指 v3 文件名。
+- 原因：iOS / Safari 对 apple-touch-icon 与 manifest icons 存在长期缓存，
+  只替换文件内容而不换名，「添加到主屏幕」仍会沿用旧图标。
+- **AstrBot 面板插件图标**：插件根目录新增 `logo.png`（512x512，同一裁剪源）。面板图标是 StarManager 按固定文件名 `<插件目录>/logo.png` 读取的，之前仓库里没有这个文件，所以面板上一直是默认图标；本次补上，重载插件后生效。
+- **裁剪范围调整（放大）**：首版太靠外（476px 方块，含大片深色暗角），按反馈收敛到**238px 方块**（裁剪框 `(282,121,520,359)`，以紫色主体为中心），紫色部分基本填满画面；素材改用 **v4** 文件名（v3 保留可回退），`index.html` / 登录页 / `/apple-touch-icon.png` / manifest 同步改 v4，`logo.png` 与 `favicon.ico` 同源重生成。
+- 本次只改前端素材与引用，不动服务端接口与数据库。
+
+## v2.0.1
+> 版本号按需求从 v0.15.0 直接跳到 v2.0.1（内容与 v0.16.0 计划一致，v0.16.0 未发布）。
+### 新增 / 调整（时间线页面：手动刷新 + 朋友圈式时间与排版）
+* 顶栏新增手动刷新按钮（🔄）：重拉当前已加载的全部动态与通知，刷新期间按钮转圈并禁用，完成后提示"已刷新"。刷新不会跳回第一页；展开中的评论区会重新拉一次评论，所以新回复点一下就能看到；正在回复的对象和评论框里没发出去的草稿会原样还原。
+* 帖子时间改为朋友圈式，并且挪到正文（含配图）下方、点赞/表情列表上方（头像旁与卡片底部都不再显示）：1 小时以内显示"刚刚 / x分钟前"，超过 1 小时显示 `2026年6月20日 23:25`，不再出现"x小时前 / x天前"。通知列表的时间显示保持原样。
+* 他（AI）发的动态不再显示右上角心情标签，只保留自己动态的心情，页面更贴近朋友圈。
+* 本次只改前端页面 `pages/timeline/index.html`，不动服务端接口与数据结构，无需迁移。
+* 回退方式：原文件已备份到 `data/plugins/_backups/xavier_moment_index_20261003_130814.html.bak`。
+
+## v0.15.0
+### 新增（评论区回灌私聊 + 生活状态对齐 + 三餐话题）
+* 新增延迟任务 `comment_digest`：NPC 评论、NPC 接话、他回 NPC 之后各触发一次，等 `comment_digest_delay_seconds`（默认 60 秒）再确认这条动态没有排队中的评论待办，才把摘要收进待注入队列；评论区一直没收尾时最多重试 3 轮。
+* 新增 `core/comment_digest.py`：把动态正文 + NPC 最新发言 + 他自己的回复压成一段摘要（同一 NPC 只留最后一条，过滤掉用户自己的评论）。
+* `on_llm_request` 静默注入：拼进本轮 `req.system_prompt`，不写历史、不落库、不要求他开口；默认只在私聊注入（`comment_digest_only_private`），队列先出队落库再注入，避免重复念。
+* 新增 `core/life_bridge.py`：只读 `xavier_life_state/life_state.json` 的当日 timeline，注入时附一行「你此刻的状态」；日期不是今天 / 日程对不齐 / 解析失败一律整段跳过，不影响评论摘要注入。
+* life_state 定位收紧：只作「避免自相矛盾」的背景，不进发帖链路；新增 `life_align_cooldown_minutes`（默认 60 分钟），限制随摘要附加的频率；注入文案明确要求别拿它当话题或汇报行程。
+* 新增 `core/meal_bridge.py` 与 `meal_topic_*` 配置：只读「兔吃了么」的 `history.json`，按 `meal_topic_ratio`（默认 0.1）抽签，把今天的某一餐当主动发帖话题（只看今天，不回退昨天）；只在对应时段提（深夜不提吃），命中后按 `meal_topic_cooldown_hours`（默认 12 小时）冷却。
+* 发帖提示词补「别报菜名」约束：只给话题素材，不让他把菜单搬进动态。
+* 新增配置：`comment_digest_enabled/only_private/delay_seconds/max_comments/ttl_hours/max_queue`、`meal_topic_enabled/ratio/cooldown_hours/data_dir`。
+* 原因：评论区发生的事此前不会回到私聊，他在私聊里像什么都不知道；他手里虽有真实菜单，却既不会主动提也没有时段/频率约束。
+
+### 版本
+* 新功能，minor：v0.14.0 -> v0.15.0。
+
+## v0.14.0
+### 新增（在对话里让他真的发出动态）
+* 新增 LLM 工具 `post_moment`：你在聊天里要求他发朋友圈时，他会真正落库一条动态（`source_hint="chat_request"`），网页时间线立刻可见，并照旧触发 NPC 评论、点赞与通知。
+* 复用既有链路（`material.collect` → `post_engine.generate_post` → `image_bridge` → `db.create_post`），人设、风格、去重、字数上限等规则全部生效；生成失败且有内容要点时退回要点原文发帖。
+* 会话级隔离：被禁用的会话里工具完全静默（不落库、不改数据）。
+* 节流：新增 `chat_post_cooldown_seconds`（默认 90 秒），防止模型连环调用把朋友圈刷屏；新增 `chat_post_enabled` 总开关。
+* 原因：此前插件仅有定时发帖与网页发帖两条入口，对话里让他发动态只会得到口头答应，数据不落库、网页看不到。
+
 ## v0.13.1
 ### 修复（主屏幕图标换成用户指定的那张，并破缓存）
 * 替换 `pages/timeline/assets/` 下全套图标素材：源图为用户提供的 180×180 手绘插画（月牙上的白兔与捕星网），中心裁方后以 LANCZOS 生成 `icon-180/192/512.png`、`favicon-32.png`、`favicon.ico`（16/32/48/64 多尺寸）、`apple-touch-icon(-precomposed).png`。

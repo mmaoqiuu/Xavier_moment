@@ -1,0 +1,66 @@
+设计文档 v0.14.0 — 对话触发发动态（chat_request）
+插件：astrbot_plugin_xavier_moment
+日期：2026-10-01
+
+一、问题定位（为什么「让他在对话里发圈」在网页看不到）
+
+排查 v0.13.1 全部发帖入口，只有两条：
+1. main.py::_do_ai_post()：由 Scheduler 按每日数量/时间段定时触发，落库时 source_hint="auto_scheduled"。
+2. core/standalone_server.py 的 POST /api/posts/create：网页上「你」自己发帖。
+
+main.py 中没有任何 @filter.llm_tool（全插件搜不到一个 LLM 工具）。因此在微信里说
+「帮我发条朋友圈」时，模型没有可调用通道，只能口头答应一句「发了」——数据不存在，
+moment.db 的 posts 表里没有这条，网页刷新自然看不到。
+
+结论：不是网页缓存问题，是功能缺失。
+
+二、改动范围
+
+只动插件自身目录，不涉及 AstrBot 主程序与系统路径。
+- main.py：新增 LLM 工具 post_moment；__init__ 增加节流字段
+- _conf_schema.json：新增 chat_post_enabled、chat_post_cooldown_seconds
+- metadata.yaml：v0.13.1 -> v0.14.0
+- CHANGELOG.md：记录本版
+
+三、工具设计
+
+工具名：post_moment
+参数：
+- content（string，可选）：用户想说的内容要点/话题；留空则由他自行决定发什么。
+- with_image（boolean，可选）：是否一定要配图；默认沿用 image_generate_enabled 与概率配置。
+
+执行链路（完全复用既有实现，不另起一套）：
+1. 会话级隔离：_is_session_enabled(event) 为假则直接返回，不执行任何动作。
+2. 开关检查：chat_post_enabled 关闭时返回提示，不落库。
+3. 节流：同一会话 chat_post_cooldown_seconds（默认 90 秒）内重复调用直接拒绝，
+   防止模型连环调用刷屏；用 asyncio.Lock 串行化读改写，避免并发重复发帖。
+4. 生成正文：material.collect() -> post_engine.generate_post(materials, extra_context=...)，
+   extra_context 中合并「最近私聊上下文」与「本次由用户在私聊中托付、内容要点为 X」的说明。
+   人设、风格、去重、字数上限等既有规则全部生效；生成失败且用户给了要点时，
+   退回用要点原文发帖，不空跑。
+5. 配图：image_bridge.try_generate_for_post()，任何失败只返回空串，照常发纯文字。
+6. 落库：db.create_post(author="ai", source_hint="chat_request", ...)。
+7. 后续生态与自动发帖一致：_send_notification()（受 notify_on_ai_post 控制）
+   -> _trigger_npc_comments() -> _trigger_likes(post_id, "ai")。
+8. 返回值：把「已发布 + 正文」交回模型，并提示不要复述系统信息，让他用自己的语气回应你。
+
+异常：整体 try/except + logger.exception，失败时返回一句可读说明，不向对话抛异常。
+
+四、配置项（_conf_schema.json）
+
+- chat_post_enabled：bool，默认 true。「允许他在对话里被要求后发动态」。
+- chat_post_cooldown_seconds：int，默认 90，高级模式显示。同一会话两次对话发帖的最小间隔。
+
+五、验收
+
+1. 重载插件，在微信里说「帮我发条朋友圈，就写今天天气很好」。
+2. 网页 timeline 出现新动态，来源为对话触发；他回复应是自然语气，而非系统信息。
+3. 90 秒内再次要求，应被婉拒（不是报错）。
+4. 会话被禁用的会话里，该工具完全静默（不落库、不改数据）。
+
+六、回滚说明
+
+本轮曾误将改动落到 astrbot_plugin_uluru_star，现已全部回滚：
+main.py（工具、节流、注入提示、register 版本）、core/bot_reader.py 与
+core/webui_server.py（原子写）、metadata.yaml、CHANGELOG.md，并删除误建的
+docs/design_v1.3.0_bot_post_moment.md。

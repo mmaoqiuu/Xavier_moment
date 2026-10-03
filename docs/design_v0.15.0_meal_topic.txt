@@ -1,0 +1,54 @@
+设计文档 v0.15.0（第二部分：三餐话题 + life_state 对齐确认）
+插件：astrbot_plugin_xavier_moment    日期：2026-10-01
+状态：代码已写入并离线自测通过（18/18）；等待你确认后 git 提交
+
+
+一、真机数据核对（只读，未改对方任何文件）
+1. data/plugin_data/xavier_life_state/life_state.json
+   - 字段：date / holiday / schedule_summary / style_summary / timeline / status / generated_at
+   - timeline 的 time 是「中文时段」：上午 / 中午 / 下午 / 晚上（不是 HH:MM）
+   - 条目示例：{"time": "下午", "schedule": "下楼去小区门口取快递…", "mood": "懒得凑热闹", "emoji": "…"}
+2. data/plugin_data/xavier_daily_meal/history.json
+   - 结构：{"YYYY-MM-DD": {"breakfast": …, "lunch": …, "dinner": …, "snack": …}}
+   - 10-01 实际内容：早饭豌杂面 / 午饭过桥米线+红烧肉+老鸭汤 / 晚饭饺子+炖羊肉+酸菜鸭肉汤 / 加餐曲奇+炸鸡
+
+
+二、life_state 对齐（只读，任何一步不满足就整段跳过）
+1. 先看 date 是否为今天 → 不是就跳过（跨天没续上，硬用昨天的作息会露馅）
+2. 再在 timeline 里找「已经开始」里最靠后的一条 → 一条都没有就跳过
+3. 时间写法两种都认："14:30" 和「上午/中午/下午/傍晚/晚上/深夜…」
+   （映射到该时段起始分钟：上午=8:00 中午=12:00 下午=13:30 傍晚=17:30 晚上=19:00 …）
+4. 输出一行：【你此刻的状态】晚上：把阳台的椅子拖出来坐着…（这会儿闲散）
+5. 文件不存在 / 解析失败 / 字段缺失 → 返回空串，只注入评论区摘要，不影响主流程
+
+
+三、三餐话题（只读 history.json，绝不写回）
+1. 只在对应时段提对应那一餐：
+   05-10 早饭 / 10-15 午饭 / 15-17 加餐 / 17-22 晚饭；22:00-次日 05:00 一律不提吃
+2. 先确认「有东西可说」：只看今天的这一餐；今天没记录就放弃（不退回昨天）
+3. 再抽签：命中概率 meal_topic_ratio（默认 0.1，约十条动态提一次）
+4. 命中后写冷却标记，meal_topic_cooldown_hours（默认 12）小时内不再提吃
+5. 话题文本形如：今天午饭：过桥米线+红烧肉+老鸭汤
+6. 只在「他自己主动发帖」时参与；你在聊天里要求他发的动态不带三餐（避免答非所问）
+7. 提示词约束：可以挑一顿说感受，但不许报菜名、罗列菜品、写美食点评
+
+
+四、新增配置（_conf_schema.json，均已给默认值，不动也能跑）
+关掉总开关：comment_digest_enabled / meal_topic_enabled
+评论侧：comment_digest_only_private(true) delay_seconds(60) max_comments(5) ttl_hours(6) max_queue(3)
+三餐侧：meal_topic_ratio(0.1) meal_topic_cooldown_hours(12) meal_topic_data_dir(留空自动找)
+
+
+五、离线自测结果（tests/test_v015_bridges.py）
+- 摘要：生成 / 不含用户评论 / 同一 NPC 只留最后一条 / 标出他在回谁 / 只有用户发言时返回 None / 空评论返回 None：6 项 PASS
+- life：HH:MM 对齐 / 中文时段对齐 / 深夜取晚饭段 / 日期不是今天跳过 / 日程全在将来跳过 / 解析失败跳过 / 文件不存在跳过：7 项 PASS
+- 三餐：午饭时段命中 / 冷却期内不再提 / 深夜不提 / 概率 0 不命中 / 总开关关闭 / 没装插件安静返回：6 项 PASS
+- 真机只读核对：此刻取出「晚上：把阳台的椅子拖出来坐着…（这会儿闲散）」；深夜不提吃、午后正确取到真实午饭
+- 合计 18 项 PASS，0 FAIL
+
+
+六、待你确认
+1.（已定稿）三餐：概率默认 0.1、冷却 12 小时；只看今天，不退回昨天。
+2.（已定稿）评论区回灌只注入私聊、超过 3 小时丢弃；life_state 只作避冲突背景，
+   默认 60 分钟最多附一次，不进发帖链路。
+确认后我再 git add / commit / push（v0.15.0）。
