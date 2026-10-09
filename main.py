@@ -24,13 +24,14 @@ from .core.comment_digest import build_digest_text
 from .core.like_engine import LikeEngine
 from .core.material import MaterialCollector
 from .core.npc_comment_guard import NpcCommentGuard
-from .core.npc_engine import NpcEngine
+from .core.npc_engine import NpcEngine, display_name
 from .core.post_engine import PostEngine
 from .core.scheduler import Scheduler, decode_schedule, encode_schedule
 from .core.standalone_server import MomentServer
 from .core.image_bridge import ImageBridge
 from .core.life_bridge import LifeBridge
 from .core.meal_bridge import MealBridge
+from .core.caption_bridge import CaptionBridge
 
 PLUGIN_NAME = "astrbot_plugin_xavier_moment"
 
@@ -39,7 +40,7 @@ PLUGIN_NAME = "astrbot_plugin_xavier_moment"
     PLUGIN_NAME,
     "YuanYuan",
     "让 AI 和你都能发布动态、互相评论，像真实朋友一样分享日常生活。",
-    "v2.0.2",
+    "v2.3.0",
     "https://github.com/mmaoqiuu/Xavier_moment",
 )
 class MomentPlugin(Star):
@@ -63,6 +64,7 @@ class MomentPlugin(Star):
         self.server: MomentServer | None = None
         self.npc_engine: NpcEngine | None = None
         self.like_engine: LikeEngine | None = None
+        self.caption_bridge: CaptionBridge | None = None
         self.chat_bridge: ChatBridge | None = None
         self.image_bridge: ImageBridge | None = None
         self.life_bridge: LifeBridge | None = None
@@ -139,6 +141,9 @@ class MomentPlugin(Star):
                        else "（保底已关闭，完全看概率）")
                 )
 
+            # 识图桥（辅助视觉模型解析朋友圈配图）
+            self.caption_bridge = CaptionBridge(self.context, self.config, self.data_dir)
+
             # 朋友圈 → 聊天 上下文桥
             self.chat_bridge = ChatBridge(self.context, self.config, self.db)
 
@@ -214,6 +219,7 @@ class MomentPlugin(Star):
         self.post_engine = None
         self.npc_engine = None
         self.like_engine = None
+        self.caption_bridge = None
         self.chat_bridge = None
 
     # ------------------------------------------------------------------
@@ -888,6 +894,10 @@ class MomentPlugin(Star):
         """调度 AI 对用户帖子的延迟评论。"""
         if not self.config.get("ai_comment_enabled", True):
             return
+        p = self._float_config("ai_comment_probability", 1.0)
+        if p < 1.0 and random.random() >= p:
+            logger.info(f"[moment] 根据配置概率 ({p:.0%})，跳过对帖子 #{post_id} 的评论")
+            return
         delay = self._int_config("ai_comment_delay_minutes", 3) * 60
         self._schedule_job(
             "ai_comment",
@@ -1229,7 +1239,10 @@ class MomentPlugin(Star):
                 return
 
             comments = await self.db.get_comments(post_id)
-            data = await self.npc_engine.generate(post, comments, npc)
+            post_caption = None
+            if self.caption_bridge:
+                post_caption = await self.caption_bridge.get_post_caption(post)
+            data = await self.npc_engine.generate(post, comments, npc, caption=post_caption)
             if not data:
                 return
 
@@ -1413,6 +1426,52 @@ class MomentPlugin(Star):
         self._trigger_npc_comments(post["id"])
         await self._trigger_likes(post["id"], "ai")
 
+    async def _format_comments_history(self, post_id: int, exclude_id: int = None) -> str:
+        """格式化评论区的交流记录，供 AI 理解楼层上下文。"""
+        if not self.db:
+            return ""
+        try:
+            comments = await self.db.get_comments(post_id)
+            if not comments:
+                return ""
+            lines = []
+            user_label = display_name(self.config, "user")
+            ai_label = display_name(self.config, "ai")
+            for c in comments:
+                cid = c.get("id")
+                if exclude_id and cid == exclude_id:
+                    continue
+                c_author = c.get("author")
+                if c_author == "user":
+                    name = user_label
+                elif c_author == "ai":
+                    name = f"你（{ai_label}）"
+                else:
+                    name = display_name(self.config, "npc", c.get("author_name") or "")
+
+                reply_target = ""
+                parent_id = c.get("parent_comment_id")
+                if parent_id:
+                    parent = next((p for p in comments if p.get("id") == parent_id), None)
+                    if parent:
+                        p_auth = parent.get("author")
+                        if p_auth == "user":
+                            p_name = user_label
+                        elif p_auth == "ai":
+                            p_name = f"你（{ai_label}）"
+                        else:
+                            p_name = display_name(self.config, "npc", parent.get("author_name") or "")
+                        reply_target = f" 回复 {p_name}"
+
+                lines.append(f"- {name}{reply_target}：{c.get('content', '')}")
+            if not lines:
+                return ""
+            history_str = "\n".join(lines)
+            return f"【当前评论区交流记录】：\n{history_str}\n\n"
+        except Exception as e:
+            logger.warning(f"[moment] 格式化评论历史失败: {e}")
+            return ""
+
     async def _do_ai_comment(self, post_id: int, post_content: str):
         """AI 对用户的帖子发表评论。"""
         if not self.db or not self.post_engine:
@@ -1424,9 +1483,16 @@ class MomentPlugin(Star):
             if self.material:
                 persona_prompt = await self.material.get_persona()
 
+            post = await self.db.get_post(post_id)
+            caption_info = ""
+            if post and self.caption_bridge:
+                post_caption = await self.caption_bridge.get_post_caption(post)
+                if post_caption:
+                    caption_info = f"\n【配图画面细节（你看到的照片内容）】：\n{post_caption}\n"
+
             prompt = f"""以下是你最亲近的人发的一条朋友圈动态：
 
-「{post_content}」
+「{post_content}」{caption_info}
 
 请以你自己的身份、用符合你性格的方式，自然地回应这条动态。
 
@@ -1470,29 +1536,56 @@ class MomentPlugin(Star):
             logger.error(f"[moment] AI 评论失败: {e}")
 
     async def _do_ai_reply_comment(self, post_id: int, post_content: str, user_comment: dict):
-        """AI 回复用户对 AI 帖子的评论。"""
+        """AI 回复用户对动态或评论的回复。"""
         if not self.db or not self.post_engine:
             return
 
         try:
+            post = await self.db.get_post(post_id)
+            if not post:
+                return
+
             # 获取人设作为 system_prompt，保持角色一致性
             persona_prompt = ""
             if self.material:
                 persona_prompt = await self.material.get_persona()
 
-            prompt = f"""你之前发了一条朋友圈动态：
-「{post_content[:200]}」
+            user_label = display_name(self.config, "user")
+            ai_label = display_name(self.config, "ai")
 
-你最亲近的人在下面评论了：
+            caption_info = ""
+            if self.caption_bridge:
+                post_caption = await self.caption_bridge.get_post_caption(post)
+                if post_caption:
+                    caption_info = f"\n【配图画面细节（你看到的照片内容）】：\n{post_caption}\n"
+
+            comments_history = await self._format_comments_history(post_id, exclude_id=user_comment["id"])
+
+            is_user_post = post.get("author") == "user"
+            if is_user_post:
+                prompt_header = f"""这是【{user_label}】发的一条朋友圈动态：
+「{post_content[:200]}」{caption_info}
+
+【{user_label}】是你最亲近的人。
+{comments_history}【{user_label}】在评论区对你说了：
 「{user_comment['content']}」
 
-请以你自己的身份、用符合你性格的方式回复这条评论。
+请以你自己的身份（{ai_label}）、用符合你性格的方式回复【{user_label}】。注意配合和维护她，自然亲密地互动。"""
+            else:
+                prompt_header = f"""你之前发了一条朋友圈动态：
+「{post_content[:200]}」{caption_info}
+{comments_history}你最亲近的人【{user_label}】在下面评论了：
+「{user_comment['content']}」
+
+请以你自己的身份（{ai_label}）、用符合你性格的方式回复这条评论。"""
+
+            prompt = f"""{prompt_header}
 
 要求：
 - 用你平时的说话习惯和语气
 - 只能回复一句话，字数严格控制在 20 字以内
 - 绝对不允许使用任何换行符
-- 像真人情侣/挚友之间在评论区的互动
+- 像真人情侣/搭档之间在评论区的自然互动
 - 直接输出回复内容"""
 
             context_block = await self._chat_context()
@@ -1536,6 +1629,9 @@ class MomentPlugin(Star):
             if self.material:
                 persona_prompt = await self.material.get_persona()
 
+            user_label = display_name(self.config, "user")
+            ai_label = display_name(self.config, "ai")
+
             # 跟他生疏的人，回一句客气话就够了，别自来熟
             unfamiliar = bool(self.npc_engine) and self.npc_engine.is_stranger_to_ai(npc_name)
             tone_hint = (
@@ -1544,13 +1640,34 @@ class MomentPlugin(Star):
                 else "熟人之间的接话：可以接梗、调侃、回怼、顺着聊。"
             )
 
-            prompt = f"""你之前在朋友圈发了一条动态：
-「{post_content[:200]}」
+            caption_info = ""
+            if self.caption_bridge:
+                post_caption = await self.caption_bridge.get_post_caption(post)
+                if post_caption:
+                    caption_info = f"\n【配图画面细节（你看到的照片内容）】：\n{post_caption}\n"
 
-{npc_name} 在这条动态下面评论了：
+            comments_history = await self._format_comments_history(post_id, exclude_id=npc_comment["id"])
+
+            is_user_post = post.get("author") == "user"
+            if is_user_post:
+                prompt_header = f"""这是【{user_label}】发的一条朋友圈动态：
+「{post_content[:200]}」{caption_info}
+
+【{user_label}】是你最亲近的人。
+{comments_history}{npc_name} 在【{user_label}】的动态下面评论了：
 「{npc_comment['content']}」
 
-请以你自己的身份、用符合你性格的方式回应这句评论（{tone_hint}）。
+请以【{user_label}】最亲近的人/伴侣/搭档的身份（{ai_label}），在评论区回应这句评论（{tone_hint}）。
+特别注意：这是【{user_label}】的生活动态，尊重事实与她的表达，不要喧宾夺主，自然维护并配合【{user_label}】。"""
+            else:
+                prompt_header = f"""你（{ai_label}）之前在朋友圈发了一条动态：
+「{post_content[:200]}」{caption_info}
+{comments_history}{npc_name} 在这条动态下面评论了：
+「{npc_comment['content']}」
+
+请以你自己的身份、用符合你性格的方式回应这句评论（{tone_hint}）。"""
+
+            prompt = f"""{prompt_header}
 
 要求：
 - 用你平时的说话习惯和语气，注意你和 {npc_name} 的关系远近，别越界

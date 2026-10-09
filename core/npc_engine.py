@@ -193,6 +193,7 @@ class NpcEngine:
         comments: list[dict],
         npc: dict,
         force_target: Optional[dict] = None,
+        caption: Optional[str] = None,
     ) -> Optional[dict]:
         """让某个 NPC 写一条评论。
 
@@ -230,6 +231,8 @@ class NpcEngine:
                 "你现在在刷朋友圈，看到这样一条动态：",
                 f"【{post_author}】{body}",
             ]
+            if caption:
+                lines.append(f"【动态配图画面细节】：\n{caption}")
             if others:
                 lines += ["", "这条动态下已有的评论（按时间顺序，最后一条最新）："]
                 for c in others[-8:]:

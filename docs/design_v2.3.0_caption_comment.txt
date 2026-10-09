@@ -1,0 +1,58 @@
+================================================================
+朋友圈插件 (xavier_moment) 图片识图与评论机制升级设计文档
+版本: v2.3.0
+================================================================
+
+一、背景与需求
+------------
+1. 用户的主模型（LLM）不具备原生视觉/多模态能力，但在 AstrBot 中配置了专门的「图像描述辅助模型」（default_image_caption_provider_id，如 gemini-flash）。
+2. 用户在朋友圈发布带图动态时，AI（他）和 NPC 无法感知图片内容，评论仅能依据纯文本，导致互动脱节。
+3. 用户希望：
+   - 能够利用现有的辅助模型对动态图片进行自动识图/解析。
+   - 将生成的图片描述（Caption）无缝融合到 AI 和 NPC 的提示词中，使其能看懂照片并自然互动。
+   - 开放 AI 评论概率配置项，默认 100%（必评），解决漏评、不评的疑惑。
+
+二、架构与模块划分
+------------
+1. 模块一：识图桥梁封装（Image Caption Helper）
+   - 位置：`core/caption_helper.py`（新模块）或集成在 `core/post_engine.py`。
+   - 机制：
+     a. 检测 AstrBot 配置中的 `default_image_caption_provider_id`（从 context.get_config() 中读取）。
+     b. 支持在插件配置中覆盖/单独指定 `image_caption_provider_id`（若留空则自动继承全局识图模型）。
+     c. 读取动态中的图片本地路径（`data/plugins/astrbot_plugin_xavier_moment/images/{filename}`）。
+     d. 调用识图 Provider（`text_chat(prompt=..., image_urls=[...])`），提取每张图片的画面特征与细节描述。
+     e. 加入轻量缓存（`post_id -> caption` 或 `filename -> caption`），避免 AI 和多个 NPC 重复调用视觉模型浪费 token。
+
+2. 模块二：AI 评论与 NPC 评论提示词融合
+   - 位置：`main.py`（_do_ai_comment）与 `core/npc_engine.py`（generate）。
+   - 机制：
+     - 若动态带有图片，异步获取图片描述。
+     - AI 评论提示词注入：
+       「这条动态包含配图，画面内容描述如下：
+       {caption}
+       发动态的人配了上面的文字和图片，请结合文字和画面细节，自然地给出回应。」
+     - NPC 评论提示词注入：
+       「【动态配图画面】：{caption}」
+       NPC 根据自身性格，既可以评论文字，也可以吐槽/夸赞图片里的内容。
+
+3. 模块三：评论触发控制与概率配置
+   - 位置：`_conf_schema.json`、`main.py`。
+   - 机制：
+     - 新增配置项：`ai_comment_probability`（浮点数，0.0 ~ 1.0，默认 1.0）。
+     - 在 `_trigger_ai_comment` 中判断：
+       若 `random.random() > probability` 则跳过，并在 DEBUG 日志中记录。
+     - 确保默认 100% 触发，不会因为随机概率错过用户的每一条分享。
+
+4. 模块四：元数据与文档更新
+   - 更新 `metadata.yaml`（版本升至 v2.3.0）。
+   - 更新 `_conf_schema.json`（新增 `ai_comment_probability` 及可选的 `image_caption_provider_id`）。
+
+三、改动文件清单
+------------
+1. 新建：`data/plugins/astrbot_plugin_xavier_moment/docs/design_v2.3.0_caption_comment.txt`
+2. 新建：`data/plugins/astrbot_plugin_xavier_moment/core/caption_bridge.py`
+3. 修改：`data/plugins/astrbot_plugin_xavier_moment/core/post_engine.py`
+4. 修改：`data/plugins/astrbot_plugin_xavier_moment/core/npc_engine.py`
+5. 修改：`data/plugins/astrbot_plugin_xavier_moment/main.py`
+6. 修改：`data/plugins/astrbot_plugin_xavier_moment/_conf_schema.json`
+7. 修改：`data/plugins/astrbot_plugin_xavier_moment/metadata.yaml`
